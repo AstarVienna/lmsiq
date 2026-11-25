@@ -43,7 +43,8 @@ The original docstring of the writer says "This is the data product we provide
 to ScopeSim and the pipeline".
 
 - Primary HDU (:meth:`Transform.make_hdu_primary`): header cards ``OPTICON``
-  (str), ``PRI_ANG`` (deg), ``ECH_ANG`` (deg), ``N_MATS = 4``, ``MAT_ORD = 4``.
+  (str), ``PRI_ANG`` (deg), ``ECH_ANG`` (deg), ``N_MATS = 4``, ``MAT_ORD = 4``,
+  followed by an empty card with keyword ``W``.
 - One ``BinTableHDU`` per slice/order (:meth:`Transform.make_hdu_ext`),
   ``EXTNAME = 'SLICE_<slice_no>'``, header cards ``SLICE_NO``, ``ECH_ORD``,
   ``W_MIN``, ``W_MAX`` (microns), and four columns ``A, B, AI, BI`` each of 16
@@ -89,9 +90,10 @@ class Transform:
     Attributes
     ----------
     wavelength_bounds : tuple of float
-        ``(w_min, w_max)`` of the rays used in the fit (microns).  Set by
-        ``RayTrace.create_svd_transforms``; distinct from the back-projected
-        ``slice_configuration['w_min'/'w_max']``.
+        ``(w_min, w_max)`` of the rays used in the fit (microns).  Set only by
+        ``RayTrace.create_svd_transforms`` (no longer initialised in
+        ``__init__``, so transforms read from FITS lack the attribute);
+        distinct from the back-projected ``slice_configuration['w_min'/'w_max']``.
     matrices : dict
         Keys ``'a', 'b', 'ai', 'bi'`` -> ``(4, 4)`` ``numpy.ndarray`` (or
         ``None`` until fitted / read).  ``a, b`` give ``(phase, alpha) ->
@@ -398,8 +400,8 @@ class Transform:
         Header cards are written for every key of ``self.lms_configuration``
         (upper-cased) plus ``N_MATS = 4`` and ``MAT_ORD = 4``, with comments
         from ``Transform.kw_comments``: ``OPTICON``, ``PRI_ANG``, ``ECH_ANG``,
-        ``N_MATS``, ``MAT_ORD``.  Keys ``slice_no``, ``spifu_no`` and
-        ``ech_ord`` are skipped if present.
+        ``N_MATS``, ``MAT_ORD``.  An empty card with keyword ``W`` (no value,
+        no comment) is appended.
 
         Returns
         -------
@@ -415,6 +417,11 @@ class Transform:
 
         Notes
         -----
+        - Open question: the purpose of the empty ``W`` card added in upstream
+          commit 9b6143a is not recorded; it looks like an unfinished edit.
+        - Inconsistency: the former exclusion of ``slice_no`` / ``spifu_no`` /
+          ``ech_ord`` keys was removed; a ``spifu_no`` key would now raise
+          KeyError (it has no ``kw_comments`` entry).
         - Clean-up: mutates ``self.lms_configuration`` in place by adding
           ``n_mats`` and ``mat_ord``.  Because ``RayTrace`` shares one dict
           between all slice transforms of a trace, every transform's

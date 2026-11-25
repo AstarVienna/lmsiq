@@ -45,8 +45,6 @@ Notes
   to the sky.
 * Inconsistency: black-body and laser fluxes use pi * (39 / 2)^2 = 1194.6 m^2
   as the telescope area, the sky uses ``Globals.elt_area`` = 1350 m^2.
-* Clean-up: ``synphot.units`` is imported twice (as ``synphot.units`` and as
-  ``s_units``) and neither name is used; ``OptimizeWarning`` is unused.
 """
 import math
 import numpy as np
@@ -707,9 +705,16 @@ class Model:
 
         Notes
         -----
-        Files: ``{Filer.psf_folder}lms_{date}_config{ccc}_field{fff}_defoc000um/``
-        ``..._spat{ss}_spec{p}_detdesi.fits`` (see the module docstring); the
-        ``Filer`` is configured with ``set_configuration('iq', opticon, False)``.
+        Files: ``{psf_folder}_sim/lms_{date}_config{ccc}_field{fff}_defoc000um/``
+        ``..._spat{ss}_spec{p}_detdesi.fits``, where ``{psf_folder}_sim`` is
+        ``Filer.psf_folder`` with its trailing '/' replaced by '_sim/' (e.g.
+        ``../data/iq/nominal/2024073000_sim/``); the ``Filer`` is configured with
+        ``set_configuration('iq', opticon, False)``.
+
+        * Inconsistency: ToySim reads its PSFs from the ``..._sim`` copy of the
+          ``lmsiq`` data folder (upstream 9b6143a), while the module docstring
+          and ``lmsiq`` use the folder without the suffix; the expected content
+          of the ``_sim`` folder is not documented.
 
         * Bug: ``oversampling`` is only assigned inside ``if downsample:``, so
           ``downsample=False`` raises ``UnboundLocalError`` in the normalisation
@@ -775,9 +780,9 @@ class Model:
 
         The PSF dictionary is computed for a point source centred on the target
         slice (beta phase 0.5).  The total flux of each slice-offset PSF is fitted
-        with a Gaussian in ``slice_offset + 0.5``; the weight for a source at
-        ``beta_phase`` is the fitted Gaussian at ``slice_offset + beta_phase``,
-        normalised to the fitted peak.
+        with a Gaussian in ``slice_offset + 0.5`` (initial sigma 0.5 slice); the
+        weight for a source at ``beta_phase`` is the fitted Gaussian evaluated at
+        ``slice_offset + 1 - beta_phase``, normalised to the fitted peak.
 
         Parameters
         ----------
@@ -795,6 +800,10 @@ class Model:
         -----
         * Bug: if ``curve_fit`` fails the bare ``except`` swallows the error and
           ``gopt`` is undefined -> ``NameError``; ``is_error`` is never read.
+        * Open question: the evaluation point ``slice_offset + 1 - beta_phase``
+          reverses the sign convention of ``beta_phase`` relative to the fit
+          abscissa ``slice_offset + 0.5`` (they agree only at 0.5); the intent
+          (inline comment 'eg a target at 0.5 -') is unfinished.
         """
         x_list, y_list = [], []
         for slice_offset in psf_dict:

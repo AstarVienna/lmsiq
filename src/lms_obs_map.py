@@ -31,7 +31,10 @@ column (lower-cased).
         | [``sky_``] + (``flat_bb_`` | ``las_iso_lambda_``)                     (no pinhole)
           [+ 'woff_{p|m}NNNnm_']                                          (tunable laser)
 
-with the trailing '_' removed.  ``lmssim_toy`` appends '_{obs:03d}.fits'
+with the trailing '_' removed.  The ``sky_`` prefix is added when the
+'wcu_per_arm' column is 'out' (WCU periscope arm out of the beam, so the
+LMS sees the Leiden sky; this condition was inverted before upstream
+commit 9b6143a).  ``lmssim_toy`` appends '_{obs:03d}.fits'
 to make the file name.
 
 Notes

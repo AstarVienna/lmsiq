@@ -80,11 +80,12 @@ Outputs (all under ``../output/distortion/<opticon>/<date>/`` unless stated)
 Notes
 -----
 - Inconsistency: all run control is hard-coded inside :func:`run`
-  (``is_ait_data = False``, ``opticon = Globals.nominal``,
+  (``is_ait_data = False``, ``opticon = Globals.extended``,
   ``generate_transforms = plot_dispersion = fit_transforms =
-  evaluate_transforms = test_transform_fit = True``), and the ``*args`` are
-  only printed.  Consequently ``lmsaiv_opt02.Opt02`` calling ``lmsdist.run()``
-  to fit the AIT coordinate CSV actually refits the nominal Zemax data.
+  evaluate_transforms = True``, ``test_transform_fit = False``), and the
+  ``*args`` are only printed.  Consequently ``lmsaiv_opt02.Opt02`` calling
+  ``lmsdist.run()`` to fit the AIT coordinate CSV actually refits the
+  extended-mode Zemax data.
 - Bug: the printed ``a_rms`` is always 0 because ``RayTrace.create_svd_transforms``
   never assigns ``RayTrace.a_rms`` (the per-trace values collected here are
   all 0).
@@ -111,7 +112,7 @@ Notes
   the ``'spifu_no'`` key that function requires (``KeyError`` at debug
   ``'low'``).
 - Clean-up: ``filer.set_configuration`` is called three times with identical
-  arguments; ``use_nominal_wpa_fit``, ``offset_data_list``,
+  arguments; ``offset_data_list``,
   ``analysis_type``'s comment about ``'iq'`` / ``'sky'``, and the
   ``RayTrace(cfg_id=..., silent=True)`` kwargs are unused.
 - Clean-up: relies on ``_ = Transform()`` to create the class-level affines
@@ -133,10 +134,10 @@ from lms_transform import Transform
 from lmsdist_polyfit import PolyFit
 
 def run(*args):
-    """Run the complete ``lmsdist`` chain for the hard-coded configuration (nominal Zemax data).
+    """Run the complete ``lmsdist`` chain for the hard-coded configuration (extended Zemax data).
 
     The function is a script body: five sequential blocks, each enabled by a
-    local boolean that is always ``True``.
+    local boolean (all ``True`` except ``test_transform_fit``).
 
     ``generate_transforms``
         For every CSV in ``Filer.ray_trace_folder``: build a ``RayTrace``,
@@ -149,7 +150,11 @@ def run(*args):
         (``Filer.write_affine_transform``), print the RMS residual and pickle
         the trace list (``Filer.trace_file``).
     ``plot_dispersion``
-        At debug level ``'low'``: ``Plot.series`` coverage / dispersion plots.
+        At debug level ``'low'``: ``Plot.series`` coverage plots (first with
+        per-mode axis limits -- nominal x 2.4-5.6, y 5.0-8.2; extended x
+        4.2-5.0, y 6.4-7.6 -- no labels and no slice perimeters, then with
+        defaults), a dispersion plot and a coverage plot of the first trace
+        coloured by slice.
     ``fit_transforms`` (Zemax data only)
         From each trace's ``get_ifp_boresight`` (slice 13) collect
         ``(wave, pri_ang, ech_ang, ech_ord)``; per order fit ``wave(ech_ang)``
@@ -166,7 +171,7 @@ def run(*args):
         surface fits at the trace's ``(pri_ang, ech_ang)`` (inline equivalent
         of ``PolyFit.make_fit_matrix``); print a comparison table at debug
         ``'medium'`` and plot at ``'low'``.
-    ``test_transform_fit`` (Zemax data only)
+    ``test_transform_fit`` (Zemax data only; disabled, ``False``)
         Call ``PolyFit.wave_to_config`` for 28 wavelengths 2.7-5.4 um and 6
         wavelengths 2.7-2.9 um and print the resulting configurations.
 
@@ -182,9 +187,14 @@ def run(*args):
 
     Notes
     -----
-    - Inconsistency: ``is_ait_data`` and ``opticon`` are hard-coded; there is
-      no way for a caller to request the AIT CSV or the extended mode without
-      editing the source, so ``lmsaiv_opt02``'s call refits Zemax data.
+    - Inconsistency: ``is_ait_data`` (False) and ``opticon``
+      (``Globals.extended`` as of upstream 9b6143a) are hard-coded; there is
+      no way for a caller to choose without editing the source, so
+      ``lmsaiv_opt02``'s call refits extended-mode Zemax data although
+      LMS-OPT-02 analyses nominal-mode frames.
+    - Bug: at debug ``'low'`` the last coverage plot uses
+      ``colour_by='slice'``, which raises AttributeError in
+      ``Plot.series`` (``Globals.n_slices`` does not exist).
     - Bug: printed ``a_rms`` is always 0 (see module notes).
     - Bug: ``test_waves`` is computed but not iterated over.
     - Bug: ``mfp_plot_points`` lacks ``'spifu_no'`` required by

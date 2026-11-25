@@ -1256,7 +1256,7 @@ class Util:
         - Inconsistency: ``lmsaiv_opt02`` calls
           ``slice_to_efp_y(slice_no, beta_phase, opticon)`` with a third
           argument -> ``TypeError``.
-        - Bug (caller): ``RayTrace.find_wavelength_bounds`` passes the ENCODED
+        - Bug: (caller) ``RayTrace.find_wavelength_bounds`` passes the ENCODED
           slice number, which is wrong in extended mode.
         - Open question: :meth:`mfp_to_efp` fills an array with the returned
           ``Quantity`` via ``numpy.full``; whether this yields floats or raises

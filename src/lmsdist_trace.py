@@ -542,8 +542,7 @@ class RayTrace:
         Notes
         -----
         - Clean-up: the ``argwhere`` / fancy-index implementation could be a
-          single boolean mask; the commented-out legacy body below the
-          ``return`` should be deleted.
+          single boolean mask.
         - Clean-up: the ``:rtype:`` annotation in the previous docstring was
           IDE-generated noise.
         """
@@ -573,7 +572,7 @@ class RayTrace:
             If False, fix the x-limits to +-40 mm (the mosaic); if True leave
             them automatic.
         subset : bool, optional
-            Read but unused (legacy multi-panel layout is commented out).
+            Read but unused (the legacy multi-panel layout has been removed).
         field : bool, optional
             Accepted via ``**kwargs`` by ``lmsdist.run`` but not read.
 

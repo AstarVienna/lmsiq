@@ -22,6 +22,20 @@ lmsaiv: AIT performance-test analysis
 
 .. automodule:: lmsaiv_opt_tools
 
+.. _api-lmsaiv_rad01:
+
+``lmsaiv_rad01``
+----------------
+
+.. automodule:: lmsaiv_rad01
+
+.. _api-lmsaiv_rad04:
+
+``lmsaiv_rad04``
+----------------
+
+.. automodule:: lmsaiv_rad04
+
 .. _api-lmsaiv_opt01:
 
 ``lmsaiv_opt01``

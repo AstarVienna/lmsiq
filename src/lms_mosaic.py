@@ -6,7 +6,7 @@ Shared by the ``lmssim`` and ``lmsaiv`` programs: ``lms_filer.Filer.read_mosaic`
 builds a ``Mosaic`` from a FITS file with a primary HDU plus one image
 extension per detector, and the LMS-OPT-01 / LMS-OPT-02 analyses
 (``lmsaiv_opt01``, ``lmsaiv_opt02``, ``lmsaiv_opt_tools``, ``lmsaiv_plot``)
-operate on these objects.
+and the LMS-RAD-04 pixel flat (``lmsaiv_rad04``) operate on these objects.
 
 **Input data**: not read directly.  ``Filer.read_mosaic`` supplies ``name``
 (the FITS file name), ``primary_hdr`` (the primary header, e.g. carrying
@@ -18,8 +18,8 @@ output).  The list order is set by ``Filer.read_mosaic``: index
 ``det_no - 1`` for ToySim files, ``Globals.mos_idx[det_no]`` (= {2: 0,
 1: 1, 3: 2, 4: 3}) for files with ORIGIN = 'SCOPESIM'.
 
-**Output**: ``copy`` returns a new ``Mosaic``; ``add`` and ``subtract``
-modify the receiver in place and return it.  Nothing is written to disk
+**Output**: ``copy`` returns a new ``Mosaic``; ``add``, ``subtract`` and
+``scale`` modify the receiver in place and return it.  Nothing is written to disk
 here (``Filer.write_mosaic`` still expects the legacy ``(name, header,
 hdus)`` tuple, not a ``Mosaic``).
 
@@ -108,7 +108,7 @@ class Mosaic:
         - ``clear_data`` uses ``mos_data *= 0.``, so NaN pixels stay NaN and the
           operation raises a numpy casting TypeError for integer image arrays;
           ToySim frames are floats so this is not hit in the current chain.
-        - Used by ``Opt01._find_fov`` (coadd buffer), ``Opt01._make_slice_map``
+        - Used by ``Opt01.calculate_fov`` (coadd buffer), ``Opt01._make_slice_map``
           and ``Opt01._find_rrf`` (zeroed template), and
           ``OptTools.median_subtract``.
         """
@@ -167,8 +167,9 @@ class Mosaic:
 
         Notes
         -----
-        - Used by ``Opt01._find_fov`` to coadd the flood-illuminated flats of one
-          LMS configuration group.  No header bookkeeping (e.g. total DIT) is
+        - Used by ``Opt01.calculate_fov`` to coadd the flood-illuminated flats of
+          one LMS configuration group, and by ``Rad04.pix_flat`` to sum the
+          per-frame pixel flats.  No header bookkeeping (e.g. total DIT) is
           done.
         """
         for self_hdu, hdu in zip(self.hdu_list, mos.hdu_list):
@@ -176,6 +177,23 @@ class Mosaic:
         return self
 
     def scale(self, factor):
+        """Multiply every detector image by a constant, in place.
+
+        Parameters
+        ----------
+        factor : float
+            Multiplier applied to each ``hdu.data``.
+
+        Returns
+        -------
+        Mosaic
+            ``self``, after modification.
+
+        Notes
+        -----
+        - Used by ``Rad04.pix_flat`` to turn the sum of pixel flats into a mean.
+          No header bookkeeping is done.
+        """
         for self_hdu in self.hdu_list:
             self_hdu.data = factor * self_hdu.data
         return self

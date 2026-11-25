@@ -771,8 +771,8 @@ class Plot:
         - ``'coverage'``: ``y = pri_ang + 0.1 * ech_ang + 0.004 * fslice_no
           + 0.001 * mfp_y`` -- a synthetic ordinate that separates
           configurations and slices so the wavelength extent of each can be
-          read off; the outline of the lowest and highest slice is drawn in
-          black.
+          read off; if ``plot_perimeters`` the outline of the lowest and
+          highest slice is drawn in black.
         - ``'dispersion'``: ``-1000 * (nom_pix_pitch / 1000) * dlambda / dmfp_x``
           in nm per pixel, from finite differences of consecutive rays
           (``waves[1:] - waves[:-1]`` over ``mfp_x[1:] - mfp_x[:-1]``); the
@@ -787,6 +787,9 @@ class Plot:
         model_config : tuple
             ``Filer.model_configuration``; only ``opticon`` (element 1) is
             used, and only when ``colour_by == 'slice'``.
+        plot_perimeters : bool, optional
+            Draw the black outline of the coverage dot pattern (default True).
+            ``lmsdist.run`` switches it off for the zoomed coverage plot.
         colour_by : {'config', 'slice', 'slice_wavelength'}, optional
             ``'config'`` colours each trace; ``'slice_wavelength'`` colours
             each ray by wavelength; ``'slice'`` is broken (see Notes).

@@ -22,7 +22,7 @@ contain ['lms_opt_02', 'nom'] plus:
 - 'iso_lambda': tunable-laser flood frames (background = per-pixel
   median of the series, ``OptTools.median_subtract``).
 
-Also required: ``as_built['slice_map_nominal']`` from the pickle at
+Also required: a nominal slice map from LMS-OPT-01 in the pickle at
 ``Globals.as_built_file``, and Zemax / AIT SVD transform FITS files read
 through ``Filer.read_svd_transforms`` from the folders selected by
 ``Filer.set_configuration('distortion', opticon, is_ait_data)``.
@@ -48,9 +48,13 @@ do not carry them.
 
 Notes
 -----
-- Bug: ``dist`` requires ``as_built['slice_map_nominal']`` but
-  ``lmsaiv_opt01`` stores 'slice_map_nomstepN' keys, so the chain from
-  LMS-OPT-01 is broken.
+- Inconsistency: the slice map is found by sub-string search for
+  'slice_map_nom' over the ``as_built`` keys and the last match wins;
+  LMS-OPT-01 stores one nominal map per step group, so which one is used
+  depends on dictionary order.
+- Bug: if no slice map matches, a message is printed but the analysis
+  continues with ``slice_map = None`` and fails in
+  ``_build_slice_row_dict`` (AttributeError).
 - Bug: ``lmsdist.run()`` (the ``calculate_transforms`` step) has
   ``is_ait_data = False`` hard-coded, so it refits the Zemax ray traces
   rather than the AIT CSV written here; the AIT transforms compared
@@ -106,7 +110,8 @@ class Opt02:
         Steps, gated by hard-coded booleans (defaults in parentheses):
 
         1. ``filer.set_configuration('distortion', nominal, is_ait_data=True)``
-           and read the slice map ``as_built['slice_map_nominal']``.
+           and take the slice map: the last ``as_built`` key containing
+           ``'slice_map_' + opticon[0:3]`` (i.e. 'slice_map_nom').
         2. ``misalign_detector`` (False): rotate detector 2 with
            ``OptTools.transform_detector_image`` to test the recovery of a
            misalignment (offset (0, 0) and angle 0.0, i.e. a no-op).
@@ -136,7 +141,8 @@ class Opt02:
         title : str
             Registry title; unused.
         as_built : dict
-            'As built' dictionary; must contain 'slice_map_nominal' and, when
+            'As built' dictionary; must contain a key containing
+            'slice_map_nom' (from LMS-OPT-01) and, when
             ``find_iso_alphas`` is False, 'alpha_traces' from a previous run.
         **kwargs
             ``overwrite_as_built_traces`` : bool, default True.  Intended to
@@ -152,8 +158,10 @@ class Opt02:
         Raises
         ------
         KeyError
-            If 'slice_map_nominal' (or 'alpha_traces' / 'lambda_traces' when the
-            corresponding extraction is disabled) is missing from ``as_built``.
+            If 'alpha_traces' / 'lambda_traces' are missing from ``as_built``
+            when the corresponding extraction is disabled.
+        AttributeError
+            If no slice map is found (``slice_map`` stays None).
 
         Notes
         -----
@@ -640,7 +648,7 @@ class Opt02:
         - Bug: ``except OptimizeWarning`` cannot catch a warning that
           ``curve_fit`` only emits (not raises) unless warnings are turned into
           errors; a failed fit leaves ``popt`` undefined.
-        - Bug (minor): the slope is evaluated with ``Globals.polynomial(mean_gap,
+        - Bug: (minor) the slope is evaluated with ``Globals.polynomial(mean_gap,
           *popt, gradient=True)``, i.e. at x = mean gap instead of a row value;
           harmless for a linear fit, wrong for higher orders.
         - Open question: 'u_mean' and 'det_no' per slice are overwritten by the
@@ -945,7 +953,7 @@ class Opt02:
 
         Notes
         -----
-        - Bug (labels only): ``'row' if type == 'iso-lambda' else 'col' +
+        - Bug: (labels only) ``'row' if type == 'iso-lambda' else 'col' +
           '_mean'`` binds as ``'row' if ... else ('col' + '_mean')``, so the
           '_mean' / '_fiducial' suffixes are only appended in the else branch.
         - Clean-up: ``type`` shadows the builtin.

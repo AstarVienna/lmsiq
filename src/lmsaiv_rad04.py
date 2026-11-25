@@ -1,10 +1,39 @@
 #!/usr/bin/env python
 """
-Decorators for use in all LMS projects.  Currently just includes @debug
+LMS-RAD-04 analysis: pixel flat field (lmsaiv program).
+
+Registered as 'lms_rad_04_pix_flat' -> ``Rad04.pix_flat`` ('Pixel flat
+field') in ``lmsaiv_opt_tests.OptTests``.  Added in upstream commit
+9b6143a.  The pixel flat (pixel-to-pixel relative gain) is the ratio of
+each pixel's signal to the mean of the 5 x 5 box centred on it, computed
+for each flood-illuminated frame and averaged over frames.  Large-scale
+structure is meant to be captured separately by a 'sky' flat.
+
+**Input data**: FITS mosaics in ``Filer.test_data_folder`` whose names
+contain 'lms_rad_04', '_flat' and '_nom' (nominal mode only); at most the
+first four are used.  Per-HDU keyword 'ID' (detector number).
+
+**Self test**: with ``simulate_pix_flat = True`` (hard-coded) every input
+frame is first multiplied by a synthetic gain pattern: on detector N, N
+square 'spots' of 400 x 400 pixels centred on row 1024 and columns
+1024 + 400 (i - 1.5) (i = 0..N-1), in which every 30th pixel in both
+directions has gain 1.1.  The recovered flat should show this dot pattern.
+
+**Output**: blocking ``Plot.mosaic`` and ``Plot.histograms`` figures of the
+mean pixel flat ('LMS_RAD_04_pixel_flat_nom', display range 0.99-1.01);
+per-frame figures at debug level 'high'.  Nothing is written to disk or
+added to ``as_built``.
+
+Notes
+-----
+- Bug: ``pix_flat`` returns None, so running it through ``lmsaiv.main``
+  pickles None as the 'as built' object.
+- Clean-up: ``simulate_pix_flat`` is hard-coded True, so real data would
+  also be multiplied by the synthetic pattern.
+- Clean-up: ``Model``, ``OptTools``, ``Util``, ``u`` and ``Box1DKernel``
+  are imported but unused.
 
 @author: Alistair Glasse
-
-Update:
 """
 import astropy.units as u
 import numpy as np
@@ -18,16 +47,71 @@ from lms_filer import Filer
 from lmsdist_util import Util
 
 class Rad04:
+    """LMS-RAD-04 pixel-flat analysis (static methods; entry point ``pix_flat``)."""
 
     def __init__(self):
+        """Instantiate ``lmssim_model.Model`` (result discarded), as in ``Opt01``.
+        """
         _ = Model()
         return
 
     @staticmethod
     def pix_flat(title, as_built, **kwargs):
-        """ The pixel flat is derived from flood illuminated images by calculating the ratio of the per pixel signal
-        to the mean 5x5 box smoothed value centred on it.  We may look at using a best fit 2d surface.
-        Valid pixels are identified by setting all pixels below 10 % of the image median to Nan.
+        """Derive a pixel flat from nominal-mode flood frames and display it.
+
+        Upstream description: "The pixel flat is derived from flood illuminated
+        images by calculating the ratio of the per pixel signal to the mean 5x5
+        box smoothed value centred on it.  We may look at using a best fit 2d
+        surface.  Valid pixels are identified by setting all pixels below 10 % of
+        the image median to Nan."
+
+        Per frame (first four matching mosaics) and detector:
+
+        1. optionally multiply by the synthetic gain pattern (module docstring);
+        2. set pixels below ``cut_level * nanmedian`` (``cut_level`` = 0.05) to
+           NaN;
+        3. box-sum with a 5 x 5 boxcar (``scipy.signal.convolve2d``, 'full',
+           cropped back to 2048 x 2048);
+        4. pixel flat = ``cnv_weights * pixel / box_sum``, where ``cnv_weights``
+           is the number of box pixels inside the detector (25 in the interior,
+           reduced along the edges).
+
+        The per-frame flats are summed with ``Mosaic.add`` and divided by their
+        number with ``Mosaic.scale``.
+
+        Parameters
+        ----------
+        title : str
+            Registry title; unused.
+        as_built : dict
+            Not used or returned.
+        **kwargs
+            Ignored.
+
+        Returns
+        -------
+        None
+            Bug: the ``lmsaiv`` caller expects the 'as built' dict.
+
+        Notes
+        -----
+        - Inconsistency: the docstring says pixels below 10 % of the median are
+          rejected; the code uses ``cut_level = 0.05`` (5 %).
+        - Inconsistency: ``convolve2d`` propagates NaN, so every pixel within two
+          pixels of a rejected one (slice gaps, detector edges of the illuminated
+          area) becomes NaN in the flat, not just the rejected pixels.
+        - Bug: the edge correction of ``cnv_weights`` subtracts a full row and a
+          full column of the box at the corners, so corner weights are too small
+          (e.g. 5 instead of 9 at the detector corner); the column correction also
+          uses the row count ``nr`` (harmless for square detectors).
+        - Open question: the box mean includes the pixel itself, so a pixel with
+          gain g is recovered as g / (1 + (g - 1) / 25) rather than g; a
+          leave-one-out mean or median filter would avoid the bias.
+        - Inconsistency: ``pix_flat.hdu_list[det_idx]`` is indexed by the 'ID'
+          keyword while the input HDUs are iterated in list order; the two agree
+          for ToySim files only (see ``Filer.read_mosaic``).
+        - Clean-up: only ``mosaics[0:4]`` are used; there is no check that any
+          file was found (``super_pix_flat`` stays None -> AttributeError).
         """
         opticon = Globals.nominal
         cut_level = 0.05

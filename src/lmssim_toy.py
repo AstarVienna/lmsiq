@@ -12,8 +12,8 @@ polynomial fit parameters.  Sources, masks, blaze and PSFs come from
 Input files (relative to ``src/``; all outside the repository)
 ----------------------------------------------------------------
 * ``../config/sim_template.fits``: header template.  Its primary header is
-  reused (``ORIGIN`` etc. overwritten) and the data shape of HDU 1 sets the
-  detector format.  The ``HIERARCH ESO DET DIT``, ``ESO DET NDIT`` and
+  reused (``ORIGIN`` etc. overwritten); the detector format is
+  ``Globals.det_format`` (2048 x 2048).  The ``HIERARCH ESO DET DIT``, ``ESO DET NDIT`` and
   ``ESO INS WLEN CEN`` keywords that ``lmsaiv`` reads therefore come from
   this template, not from the observation.
 * ``../output/distortion/{opticon}/svd_fits_index_{nom|ext}_zmx.pkl``: index
@@ -26,8 +26,8 @@ Input files (relative to ``src/``; all outside the repository)
 
 Output
 ------
-``../data/test_toysim/{cfg_id}_000.fits`` per observation (the folder must
-exist): primary HDU plus ``DET1.DATA`` .. ``DET4.DATA`` image extensions.
+``../data/test_toysim/{cfg_id}_{obs:03d}.fits`` for ``obs`` = 0 ..
+``lms_nexp`` - 1 per observation (the folder must exist): primary HDU plus ``DET1.DATA`` .. ``DET4.DATA`` image extensions.
 
 Header keywords written
 -----------------------
@@ -57,15 +57,13 @@ Notes
   and then ``PolyFit.wave_to_config(wave_ref.value / 1000., ...)`` although
   ``wave_to_config`` expects um (``wxo_lim`` = 108-115 um x order); the path
   fails or mis-scales by 1000.
-* Bug: ``n_exp = int(sim_config['lms_nexp'])`` is immediately overwritten by
-  ``n_exp = 1``; only one exposure is ever written.
 * Open question: the extended-source convolution uses the slice-13 PSF for
   every slice, and ``psf_dict`` is loaded once for the first order processed
   and reused for all other orders.
-* Clean-up: ``waves_mosaic`` and ``tau_ech_mosaic`` are filled but never
-  written (the ``debug`` branch writes the image HDUs again under a
-  ``_waves`` name); ``w_pnh``, ``mfp_slice`` / ``oob``, ``psf_sig``,
-  ``n_rows_written``, ``w_illuminated`` and ``fits_waves_out_path`` are
+* Clean-up: ``waves_mosaic`` and ``tau_ech_mosaic`` are allocated but no
+  longer filled or written (the ``debug`` branch writes the image HDUs again
+  under a ``_waves`` name); ``w_pnh``, ``mfp_slice`` / ``oob``,
+  ``efp_y_ext_bs``, ``n_rows_written`` and ``fits_waves_out_path`` are
   unused; the local ``model_configurations`` duplicates
   ``Globals.model_configurations`` with ``coord_out = ('det_x', 'det_y')``
   instead of ``('mfp_x', 'mfp_y')``.
@@ -109,7 +107,8 @@ class Toy:
             ``'lms_ech_w_off'`` (wavelength offset simulating an echelle rotation,
             um), ``'lms_pp1'``, ``'wcu_fp2_1'``, ``'cfo_fp2'``, ``'cfo_chop_off_x'`` /
             ``'_y'`` (EFP chop offsets, mm), ``'lms_dit'``, ``'lms_ndit'``,
-            ``'lms_nexp'``, plus those used by ``lmssim_model.Model``.
+            ``'lms_nexp'`` (number of exposures written), plus those used by
+            ``lmssim_model.Model``.
 
         Returns
         -------
@@ -135,38 +134,41 @@ class Toy:
         4. Sources: ``Model.load_source_lists``, ``Model.make_blaze_dictionary``,
            ``Model.make_spectra`` (per-order background and pinhole spectra).
         5. For every slice transform: blaze profile (``Model.make_tau_blaze``);
-           slice centre row from ``Util.efp_to_mfp`` + ``Util.mfp_to_dfp``; then,
-           for each detector the slice covers, a 250-row strip is built row by row
-           with ``Util.dfp_to_efp`` (wavelength and alpha per pixel), filled with
-           the interpolated background x blaze where ``|alpha| < efp_x_fov_mm / 2``,
-           and convolved (``scipy.signal.convolve2d``, 'same', 'symm') with the
-           slice-13 PSF.  Pinholes: for each pinhole within +-4 slices of the
-           current slice the point-source spectrum is mapped with
-           ``Util.efp_to_dfp``, split bilinearly between the two nearest rows,
-           weighted by ``Model.fit_beta_weights`` and convolved with the
-           offset-slice PSF.
-        6. ``Detector.detect(image, dit, n_dit)`` adds dark, shot and read noise;
+           slice centre row from ``Util.efp_to_mfp`` + ``Util.mfp_to_dfp`` at the
+           slice's ``w_min`` / ``w_max``; then, for each detector the slice covers,
+           a 140-row strip centred on that row is built by
+           :meth:`_get_extended_illumination` and convolved
+           (``scipy.signal.convolve2d``, 'same', 'symm') with the slice-13 PSF.
+           Pinholes: for each pinhole within +-4 slices of the current slice the
+           point-source spectrum is placed at the pinhole's own (chopped) EFP
+           position, mapped with ``Util.efp_to_dfp``, split between the nearest
+           row (weight ``1 - 2|row_phase - 0.5|``) and its neighbour, weighted by
+           ``Model.fit_beta_weights`` and convolved with the offset-slice PSF.
+        6. For each of the ``lms_nexp`` exposures, ``Detector.detect(image, dit,
+           n_dit)`` adds dark, shot and read noise to the same noiseless image;
            four ``ImageHDU`` extensions are written with ``Filer.write_mosaic`` to
-           ``../data/test_toysim/{cfg_id}_000.fits``.
+           ``../data/test_toysim/{cfg_id}_{obs:03d}.fits``.
 
-        At debug level 'low' a round-trip test of ``Util.slice_to_efp_y`` /
-        ``Util.efp_y_to_slice_no`` is printed first; at 'medium' a per-slice timing
-        table.
+        At debug level 'medium' the configuration-code table and a per-slice
+        timing table are printed.
 
         * Bug: on the nearest-transform path ``wave_ref`` is None when passed to
           ``Util.find_closest_transforms`` (only the ``'eo'`` path assigns it) and
           ``wave_to_config`` receives ``wave_ref.value / 1000.`` although it
           expects um.
-        * Bug: ``n_exp`` is forced to 1 after being read from ``lms_nexp``.
-        * Bug: ``beta_phase`` and ``beta_weight`` hold the values of the last
-          pinhole processed in step 3 and are applied to every pinhole in step 5,
-          so all pinholes are placed at that one beta phase.
+        * Bug: ``beta_phase`` (and hence ``beta_weight``) holds the value of the
+          last pinhole processed in step 3 and is applied to every pinhole in
+          step 5; each pinhole is now traced at its own EFP y, but all share one
+          across-slice weight set.
         * Bug: the pinhole wavelengths ``efp_ws`` are those of the last illuminated
-          row of the extended-background loop, not of the pinhole's own trace.
-        * Bug: the extended-background loop covers 251 rows
-          (``range(det_row_min, det_row_max + 1)``) for a 250-row strip; an
-          illuminated last row raises ``IndexError``.  Column indices are only
-          guarded against ``> 2047`` and row indices not at all.
+          row returned by :meth:`_get_extended_illumination`, not of the
+          pinhole's own trace.
+        * Bug: if the first observation is a dark and the debug level is
+          'medium' (the ``lmssim`` default), the timing printout references
+          ``ext_ill`` before any assignment (UnboundLocalError); before upstream
+          9b6143a ``ext_ill`` was zero-filled ahead of the dark check.
+        * Bug: column indices are only guarded against ``> 2047`` and row indices
+          (including ``dfp_row + drow``) not at all.
         * Open question: ``psf_dict`` is loaded once (first order encountered) and
           reused for all orders; the slice-13 PSF is used for every slice.
         * Open question: for darks (``ObsMap.is_dark``) the flux calculation is
@@ -529,6 +531,53 @@ class Toy:
                                    opt_transform, affines,
                                    wf_sed,
                                    wt_blaze, w_ech_off):
+        """Build the extended-background image of one slice on one detector.
+
+        For each row of a strip starting at ``det_row_min`` the detector pixels are
+        mapped back to the EFP with ``Util.dfp_to_efp`` (wavelength and along-slice
+        position per column).  Pixels with ``|efp_x| < Globals.efp_x_fov_mm / 2``
+        are illuminated: their wavelength is shifted by ``w_ech_off`` (simulating an
+        echelle rotation), and they receive the extended-source spectrum
+        interpolated at that wavelength times the echelle blaze transmission.
+
+        Parameters
+        ----------
+        det_no : int
+            Detector number 1..4.
+        det_row_min : int
+            First detector row of the strip.
+        n_det_rows_slice : int
+            Strip height in rows (``Toy.run`` uses 140).
+        opt_transform : lms_transform.Transform
+            Slice/order transform.
+        affines : dict
+            MFP <-> DFP affine transforms from ``Filer.read_fits_affine_transform``.
+        wf_sed : tuple
+            ``(w_sed, f_ext_sed, f_pnh_sed)`` from ``Model.make_spectra`` for this
+            order; only the extended spectrum is used.
+        wt_blaze : tuple
+            ``(w_blaze, tau_blaze)`` from ``Model.make_tau_blaze``.
+        w_ech_off : float
+            Wavelength offset in um.
+
+        Returns
+        -------
+        ext_ill : numpy.ndarray
+            ``(n_det_rows_slice, 2048)`` illumination strip (photon rate units of
+            the spectrum, before PSF convolution).
+        efp_ws : astropy.units.Quantity
+            Wavelengths (um, including ``w_ech_off``) of every column of the LAST
+            illuminated row.  ``Toy.run`` reuses them as the pinhole wavelength grid.
+
+        Notes
+        -----
+        - Bug: the loop covers ``n_det_rows_slice + 1`` rows
+          (``range(det_row_min, det_row_max + 1)``) for an ``n_det_rows_slice``-row
+          strip, so an illuminated last row raises IndexError.
+        - Bug: if no row is illuminated ``efp_ws`` is never assigned
+          (UnboundLocalError).
+        - Clean-up: ``n_rows_written`` and ``f_pnh_sed`` are unused.
+        """
         # ########################################################################################
         # Generate the extended background illuminated slice image
         w_sed, f_ext_sed, f_pnh_sed = wf_sed

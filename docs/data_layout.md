@@ -16,6 +16,7 @@ lmsiq/
         lms_..._spat<SS>_spec<P>_detdesi.fits     as-designed model
         lms_..._spat<SS>_spec<P>_det<MMMM>.fits   Monte-Carlo instance MMMM
         lms_..._spat<SS>_spec<P>_sli*.fits        slicer-plane images (skipped)
+    iq/<opticon>/<date_stamp>_sim/                PSF copy read by ToySim (lmssim_model.load_psf_dict)
     distortion/<nominal|extended>/<date>/          Zemax ray-trace CSVs (lmsdist)
     distortion_ait/<opticon>/ait/                  LMS_ait_dist_coord.csv written by lmsaiv_opt02
     sky/leiden/LBL_A10_w3000_R0120000_ALL_Leiden_LM_R.fits
@@ -48,12 +49,12 @@ Primary HDU plus four image HDUs, one per H2RG detector.
 | extension | `EXTNAME` | `DET<n>.DATA` | both |
 | extension | `CRVAL1D`, `CRVAL2D` | detector centre in the mosaic plane, mm (+-19.547) | both |
 | extension | `X_CEN`, `Y_CEN` | same, read by `Opt01` | ToySim |
-| extension | `HIERARCH ESO DET3 CHIP GAIN` | el/ADU, read by `dark_stats` | ToySim (2.0) |
+| extension | `HIERARCH ESO DET3 CHIP GAIN` | el/ADU, read by `Rad01.dark_stats` | ToySim (2.0) |
 | extension | `HIERARCH AIT PIXEL_PITCH` | mm | ToySim |
 | primary | `HIERARCH ESO DET DIT`, `NDIT` | exposure | template |
 | primary | `HIERARCH ESO INS WLEN CEN` | central wavelength, um | template |
-| primary | `HIERARCH AIT OPTICON`, `AIT PRI_ANG`, `AIT ECH_ANG` | nominal/extended, prism and echelle angle | ToySim only |
-| primary | `HIERARCH ACHG REF_ECH_ORD` | echelle order of the setting | ToySim only |
+| primary | `HIERARCH AIT OPTICON`, `AIT PRI_ANG`, `AIT ECH_ANG` | nominal/extended, prism and echelle angle; `OPTICON` and `ECH_ANG` also name the `Opt01` slice map | ToySim only |
+| primary | `HIERARCH ACHG REF_ECH_ORD` | echelle order of the setting; part of the slice-map name | ToySim only |
 | primary | `HIERARCH ACHG CFO CHOP X`, `Y` | pinhole position in the CFO focal plane, mm | ToySim only |
 | primary | `HIERARCH ACHG LASER WAVE` | tunable-laser wavelength, um | ToySim, and added by `lmssim_scope` |
 
@@ -78,8 +79,19 @@ Frames are selected by substrings of their file names, built by
 kind = dark | sky_ | flat_bb_ | bb_iso_alpha_a<p|n>NNN_b<p|n>NNN_ | las_iso_lambda_ | las_psf_ | woff_<p|m>NNNnm
 ```
 
-e.g. `lmsaiv_opt01` reads `['lms_opt_01', '_dark']` and
-`['lms_opt_01', 'flat_bb', 'step9']`.
+e.g. `lmsaiv_rad01` reads `['lms_rad_01', '_dark']`, `lmsaiv_rad04` reads
+`['lms_rad_04', '_flat', '_nom']` and `lmsaiv_opt01` reads
+`['lms_opt_01', 'flat_bb', 'step9']`. A `sky_` kind is produced when the
+`wcu_per_arm` column is `out`.
+
+## The `as_built` pickle
+
+`../output/asbuilt/asbuilt_toysim.pkl` is a dict loaded and saved by
+`lmsaiv.py` around every analysis. LMS-OPT-01 adds one slice map per
+configuration group under the map's own name,
+`slice_map_<nom|ext>_eo<order>_ea<p|n><NNNNN>` (`NNNNN` = 1000 x |echelle angle|);
+LMS-OPT-02 picks the last key containing `slice_map_nom` and adds
+`alpha_traces`, `lambda_traces`, `affines` and `dist_coord`.
 
 ## Zemax ray-trace CSV (`lmsdist_trace.RayTrace._read_csv`)
 
@@ -94,7 +106,8 @@ sp_slicer_y`. The AIT variant written by `lmsaiv_opt02._print_dist_coord` has
 
 `lms_efp_mfp<_nom|_ext>_pa#####_ea<p|n>#####_v<date>.fits`
 
-- primary header: `OPTICON`, `PRI_ANG`, `ECH_ANG`, `N_MATS = 4`, `MAT_ORD = 4`
+- primary header: `OPTICON`, `PRI_ANG`, `ECH_ANG`, `N_MATS = 4`, `MAT_ORD = 4`,
+  then an empty card `W` (added upstream in `9b6143a`, purpose not recorded)
 - one `BinTableHDU` per slice, `EXTNAME = SLICE_<n>`, header `SLICE_NO`,
   `ECH_ORD`, `W_MIN`, `W_MAX`; columns `A`, `B`, `AI`, `BI`, each 16 values
   (a flattened 4 x 4 matrix), stored as `E` (float32).

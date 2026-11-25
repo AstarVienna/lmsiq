@@ -314,3 +314,42 @@ measured central wavelength" per detector.
 
 Totals: A+B+C ≈ 2 months delivers everything in Tiers 1 and 2 that is unblocked.
 D+E is the distortion transform proper and is a project in its own right.
+
+## 8. Addendum 2026-11-25: upstream commit `9b6143a`
+
+The fork was updated to Alistair Glasse's commit `9b6143a` ("General tidy up for
+PIP team walkthrough"). The verdict in section 1 is unchanged. Line numbers in
+section 4 refer to `1547ea4`. Changes that touch this analysis:
+
+- **`lmsiq` program.** The two-argument `Filer.set_configuration` calls listed as
+  "Broken" in section 2 are fixed (`is_ait_data=False` is now passed in
+  `lmsiq.py` and `lmsiq_cuber.Cuber.build`). It has not been re-run here, as the
+  Zemax PSF data are not in the repository.
+- **Dark statistics (Tier 1 item 6).** `OptTools.dark_stats` moved unchanged to
+  `lmsaiv_rad01.Rad01.dark_stats`, behind a new LMS-RAD-01 registry entry
+  (`lms_rad_01_dark`, files tagged `lms_rad_01` + `_dark`). The mapping and
+  verdict for item 6 stand.
+- **New LMS-RAD-04 pixel flat** (`lmsaiv_rad04.Rad04.pix_flat`): pixel value
+  divided by its 5 x 5 box mean, after rejecting pixels below 5 % of the median,
+  averaged over up to four nominal-mode flood frames, with a built-in synthetic
+  gain pattern as a self test. It has not been assessed against the pipeline's
+  flat-field recipes. The API notes record a NaN-growth effect, a corner
+  weighting error and a small bias from including the pixel in its own box mean.
+- **Slice map (Tier 1 item 2, Tier 2 item 7).** `Opt01._make_slice_map` now names
+  the map from the primary header: `slice_map_<nom|ext>_eo<order>_ea<p|n><NNNNN>`.
+  `Opt02.dist` finds it by sub-string match, which joins up the LMS-OPT-01 to
+  LMS-OPT-02 chain. The OPT-01 flood step groups changed to nominal 2+3, 9+10,
+  12+13 and extended 5+6+7.
+- **Registry and driver.** `OptTests.run` became `OptTests.get_test`, and loading
+  and saving the `as_built` pickle moved into `lmsaiv.py`. LMS-OPT-03 and -04 are
+  now explicit "not yet available" stubs. LMS-OPT-09 ("Leiden sky") is
+  registered but still fails.
+- **ToySim.** The `n_exp = 1` override is gone, so `lms_nexp` exposures are
+  written per step. The extended-background strip is now 140 rows, built by
+  `Toy._get_extended_illumination`. Pinholes are traced at their own EFP
+  position. PSFs are read from a `<date_stamp>_sim` copy of the iq folder.
+  The `sky_` condition in `ObsMap` was inverted (sky when the WCU periscope arm
+  is out).
+- **`lmsdist`.** The hard-coded mode is now `extended`; the transform-fit test is
+  switched off.
+

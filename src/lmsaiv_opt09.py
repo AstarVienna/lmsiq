@@ -3,9 +3,10 @@
 LMS-OPT-09 analysis stub: sky / background difference image (lmsaiv program).
 
 ``Opt09.sky`` is a copy of ``lmsaiv_opt04.Opt04.ghost`` with
-``test_name`` = 'lms_opt_09'.  It is not registered in
-``lmsaiv_opt_tests.OptTests.optical_test`` and is not imported anywhere,
-so it cannot be run through ``lmsaiv.py``.  The intended analysis is a
+``test_name`` = 'lms_opt_09'.  It is registered in
+``lmsaiv_opt_tests.OptTests.optical_test`` as 'lms_opt_09_sky' with the
+title 'Leiden sky', but unlike the other stubs it has no early return,
+so selecting it runs the draft code.  The intended analysis is a
 target-minus-reference difference of two test steps shown with
 ``Plot.mosaic``.
 
@@ -18,11 +19,13 @@ tagged ['lms_opt_09', 'nom'] plus 'Step1' (reference) / 'Step2' (target).
 Notes
 -----
 - Bug: ``inc_tags + ref_step`` adds a list and a str -> TypeError.
-- Bug: ``sky`` returns None instead of ``as_built``.
+- Bug: ``sky`` returns None instead of ``as_built`` (were it to get that
+  far, ``lmsaiv.main`` would pickle None as the 'as built' object).
 - Inconsistency: capitalised 'Step1' / 'Step2' tags versus the lower-case
   'stepN' naming of ``lms_obs_map``.
-- Open question: which AIT test LMS-OPT-09 is (the registry has no
-  entry; the commented-out 'lms_opt_08' is 'Out-of-field straylight').
+- Open question: the registry title is 'Leiden sky', but the draft
+  computes a step difference image; what the LMS-OPT-09 analysis should
+  measure is not documented.
 - Clean-up: duplicate of ``lmsaiv_opt04``; unused
   ``filer.set_configuration`` and ``flag_text``.
 
@@ -34,7 +37,7 @@ from lms_filer import Filer
 
 
 class Opt09:
-    """LMS-OPT-09 difference-image analysis (stub, non-functional, unregistered)."""
+    """LMS-OPT-09 difference-image analysis (stub, non-functional)."""
 
 
     def __init__(self):

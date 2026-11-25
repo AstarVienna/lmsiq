@@ -187,7 +187,7 @@ class Analyse:
 
         Algorithm: pick the trace whose ``wave_reference`` is closest to
         ``ds_dict['wavelength']``; pull its ``'wavelength'`` and ``'mfp_x'`` ray series
-        (filtered by ``ds_dict``); form first differences ``dw / dx`` between
+        (unfiltered, i.e. all slices and orders of the trace); form first differences ``dw / dx`` between
         consecutive rays; sort by wavelength and linearly interpolate to the target
         wavelength.  :meth:`lmsiq_cuber.Cuber.build` multiplies the result by the 18 um
         pixel pitch to obtain nm per detector pixel (um/mm x um = nm/pixel).
@@ -196,8 +196,7 @@ class Analyse:
         ----------
         ds_dict : dict
             Data-set dictionary from :meth:`lmsiq_image_manager.ImageManager.load_dataset`;
-            ``'wavelength'`` (um) is used, and the whole dictionary is passed to
-            ``Trace.get_series`` as the ray filter.
+            only ``'wavelength'`` (um) is used.
         ray_traces : list of lmsdist_trace.Trace
             Traces from the ``lmsdist`` trace pickle (``dist_filer.trace_file``).
 
@@ -208,14 +207,11 @@ class Analyse:
 
         Notes
         -----
-        * Bug: ``Trace.get_series(tag, series_filter)`` iterates over every key of
-          ``series_filter`` and indexes ``self.series[key]``; ``ds_dict`` contains keys
-          (``'folder'``, ``'config_no'``, ``'file_names'``, ``'debug'``, ...) that are not
-          ray-series columns, so a ``KeyError`` is expected.  Whether this ever ran with
-          an earlier ``Trace`` API is an open question.
-        * Inconsistency: consecutive rays in the series are not guaranteed to be
-          adjacent in x, so individual ``dw/dx`` differences can be noisy or of either
-          sign; only the interpolated value at ``wave`` is used.
+        * Open question: the ray series are taken unfiltered (``get_series(tag, {})``,
+          upstream fix for the earlier ``KeyError`` with ``ds_dict`` as filter), so
+          consecutive rays may belong to different slices or echelle orders and the
+          first differences include large jumps of either sign; the result depends on
+          which differences fall next to ``wave`` after sorting.
         * Inconsistency: the original docstring spoke of interpolating ``dw_dx_mean``
           values over all traces; the code uses a single nearest trace.
         """

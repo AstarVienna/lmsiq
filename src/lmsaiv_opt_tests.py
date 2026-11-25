@@ -1,55 +1,57 @@
 """
-Registry and runner for the LMS AIT performance-test analyses (lmsaiv program).
+Registry of the LMS AIT performance-test analyses (lmsaiv program).
 
 This module belongs to the ``lmsaiv`` program (the fourth of the four lmsiq
 programs: lmsiq, lmsdist, lmssim, lmsaiv).  It maps an "analysis project"
 name (``cap_name``) onto the static analysis method that implements it and a
-human readable title, and it owns the only persistent product of the AIV
-analysis chain: the ``as_built`` dictionary, pickled at
+human readable title.  ``OptTests.get_test`` returns ``(method, title)``;
+the caller (``lmsaiv.main``) loads the ``as_built`` dictionary from
 ``Globals.as_built_file`` ('../output/asbuilt/asbuilt_toysim', with '.pkl'
-appended by ``Filer.write_pickle``).
+appended by ``Filer`` pickling), calls ``method(title, as_built)`` and
+pickles the result.
 
 **Registered analyses** (key -> method, AIT test):
 
+- 'lms_rad_01_dark' -> ``Rad01.dark``: LMS-RAD-01, dark current and read
+  noise statistics (``lmsaiv_rad01``).
+- 'lms_rad_04_pix_flat' -> ``Rad04.pix_flat``: LMS-RAD-04, pixel flat field
+  (``lmsaiv_rad04``).
 - 'lms_opt_01_fov' -> ``Opt01.fov``: LMS-OPT-01, field of view, slice map
   and relative spectral response (``lmsaiv_opt01``).
 - 'lms_opt_02_dist' -> ``Opt02.dist``: LMS-OPT-02, iso-alpha / iso-lambda
   traces and distortion coordinates (``lmsaiv_opt02``).
 - 'lms_opt_03_psf' -> ``Opt03.psf``: LMS-OPT-03, point / line spread
-  function (non-functional stub, ``lmsaiv_opt03``).
-- 'lms_opt_04_ghost' -> ``Opt04.ghost``: LMS-OPT-04, ghost imaging
-  (non-functional stub, ``lmsaiv_opt04``).
+  function (stub, ``lmsaiv_opt03``).
+- 'lms_opt_04_ghost' -> ``Opt04.ghost``: LMS-OPT-04, ghost imaging (stub,
+  ``lmsaiv_opt04``).
+- 'lms_opt_09_sky' -> ``Opt09.sky``: LMS-OPT-09, 'Leiden sky' (draft,
+  ``lmsaiv_opt09``).
 
-An 'lms_opt_08' (out-of-field straylight) entry is present but commented
-out, and ``lmsaiv_opt09.Opt09`` is not registered at all.
+An 'lms_rad_03_inst_bgd' (instrument background) entry is present but
+commented out.
 
 **Input data**: FITS mosaics are read from ``Filer.test_data_folder`` (set
 by the caller via ``Filer.set_test_data_folder``, e.g.
 '../data/test_toysim'); the files are selected by sub-string tags derived
-from the test name (see the individual Opt modules and ``lms_obs_map`` for
-the naming convention).  The 'as built' pickle is read from
-``Globals.as_built_file`` if it exists.
+from the test name (see the individual analysis modules and
+``lms_obs_map`` for the naming convention).
 
-**Output**: ``run`` writes the updated ``as_built`` dictionary back to
-``Globals.as_built_file`` + '.pkl'.  Everything else (tables, statistics)
-is printed to stdout or shown as blocking matplotlib figures by the
-individual analyses.
+**Output**: none here; ``get_test`` only prints the matching data files.
 
 Notes
 -----
-- Inconsistency: ``OptTests.run`` calls the registered method as
-  ``method(title, as_built, **kwargs)`` but ``Opt03.psf`` is declared as
-  ``psf(test_name, title, as_built, **kwargs)``, so 'lms_opt_03_psf' fails
-  with a TypeError before doing anything.
-- Bug: ``Opt04.ghost`` returns None, so running 'lms_opt_04_ghost' pickles
-  None as the 'as built' object and breaks every subsequent analysis that
-  indexes ``as_built``.
+- Bug: ``Rad04.pix_flat`` and ``Opt09.sky`` return None, so running them
+  through ``lmsaiv.main`` pickles None as the 'as built' object and breaks
+  every subsequent analysis that indexes ``as_built``.
+- Inconsistency: ``Opt03.psf`` is declared as ``psf(test_name, as_built,
+  **kwargs)`` while every other method takes ``(title, as_built,
+  **kwargs)``.
 - Open question: ``Filer.write_pickle`` does not create the
-  '../output/asbuilt' folder; on a clean checkout the first ``run`` appears
+  '../output/asbuilt' folder; on a clean checkout the first run appears
   to fail with FileNotFoundError when writing the pickle.
 - Clean-up: plotting is controlled by the global ``Globals.debug_level``;
-  the ``do_plot`` keyword passed by ``lmsaiv.py`` is forwarded via
-  ``**kwargs`` but ignored by ``Opt01.fov``.
+  the ``do_plot`` keyword passed by ``lmsaiv.py`` to ``get_test`` is
+  ignored.
 
 @author: Alistair Glasse
 """
@@ -69,7 +71,7 @@ class OptTests:
 
     The registry is held in the class attribute ``optical_test`` and is
     populated by ``__init__`` (so an instance must be created once before
-    ``OptTests.run`` is used).  Keys are ``cap_name`` strings of the form
+    ``OptTests.get_test`` is used).  Keys are ``cap_name`` strings of the form
     '<data source test>_<analysis>' (e.g. 'lms_opt_01' + '_fov'); the first
     ten characters name the AIT test whose data files are read.  Values are
     ``(method, title)`` tuples.
@@ -86,8 +88,8 @@ class OptTests:
     def __init__(self):
         """Populate the class-level ``optical_test`` registry.
 
-        Upstream note: the key comprises 'data_source_' + 'analysis_type' (e.g.
-        'lms_opt_01_' + 'fov'), acknowledging that an analysis project (Jupyter
+        Upstream note: the key comprises ``'data_source_' + 'analysis_type'`` (e.g.
+        ``'lms_opt_01_' + 'fov'``), acknowledging that an analysis project (Jupyter
         notebook) may use data from several tests.
 
         The dictionary literal is assigned to ``OptTests.optical_test`` (a class

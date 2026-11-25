@@ -44,8 +44,10 @@ python lmsiq.py
    MET-2745 (resolving power) and MET-3739 (spectral FWHM) overlaid
    ({meth}`lmsiq_plot.Plot.series`).
 
-Status at the documented commit (`1547ea4`): **does not run**. The driver calls
-`Filer.set_configuration` with two arguments but the method now takes three.
+Status at the documented commit (`9b6143a`): the two-argument
+`Filer.set_configuration` calls that stopped the driver at `1547ea4` have been
+fixed upstream (`is_ait_data=False` is now passed). Whether it runs end to end
+has not been checked here, because the Zemax PSF data are not in the repository.
 The image-quality code was last substantively touched in February 2026 and has
 been superseded in the author's attention by `lmsaiv`.
 
@@ -55,6 +57,10 @@ been superseded in the author's attention by `lmsaiv`.
 cd src
 python lmsdist.py
 ```
+
+The run configuration is hard-coded at the top of {func}`lmsdist.run`; at
+`9b6143a` it processes the **extended** (spectral-IFU) mode Zemax data
+(`opticon = Globals.extended`, `is_ait_data = False`).
 
 Reads Zemax ray-trace CSV files (one per prism/echelle setting) and for every
 (slice, echelle order) fits a pair of 4 x 4 polynomial matrices mapping
@@ -88,8 +94,10 @@ python lmssim.py
 ```
 
 Reads the Polarion export `../config/METIS_Performance_Test_Sequence_LMS.csv`
-through {class}`lms_obs_map.ObsMap` and generates one four-detector FITS frame
-per test step. Two back ends:
+through {class}`lms_obs_map.ObsMap` and generates four-detector FITS frames for
+every step of one test (`test_name = 'lms_opt_02'` at `9b6143a`); ToySim writes
+`lms_nexp` exposures per step, each with independent detector noise. Two back
+ends:
 
 - **ToySim** ({class}`lmssim_toy.Toy`): a geometric forward model. For each
   slice transform it maps every detector pixel back to (wavelength, alpha),
@@ -109,16 +117,21 @@ cd src
 python lmsaiv.py
 ```
 
-`lmsaiv.py` points {class}`lms_filer.Filer` at `../data/test_toysim` and runs
-one analysis from the registry in {mod}`lmsaiv_opt_tests`:
+`lmsaiv.py` points {class}`lms_filer.Filer` at `../data/test_toysim`, loads the
+`as_built` pickle (or starts an empty one), looks up one analysis in the
+registry of {mod}`lmsaiv_opt_tests` with `OptTests.get_test`, calls it as
+`method(title, as_built)` and pickles the returned object. The analysis selected
+at `9b6143a` is `lms_opt_04_ghost`; edit `cap_name` to choose another.
 
 | Key | Class | AIT test | Status |
 |---|---|---|---|
-| `lms_opt_01_fov` | {class}`lmsaiv_opt01.Opt01` | LMS-OPT-01 field of view, slice edges and gaps, relative response | works; the subject of the last ten commits and of the AIT team's notebook |
-| `lms_opt_02_dist` | {class}`lmsaiv_opt02.Opt02` | LMS-OPT-02 iso-alpha / iso-lambda traces, detector gaps and rotation, fiducial points for the distortion fit | runs only on ToySim headers; its input key into the `as_built` pickle no longer matches what `Opt01` writes |
-| `lms_opt_03_psf` | {class}`lmsaiv_opt03.Opt03` | LMS-OPT-03 monochromatic PSF | stub, does not run |
-| `lms_opt_04_ghost` | {class}`lmsaiv_opt04.Opt04` | ghosts | stub, does not run |
-| (not registered) | {class}`lmsaiv_opt09.Opt09` | sky | stub, does not run |
+| `lms_rad_01_dark` | {class}`lmsaiv_rad01.Rad01` | LMS-RAD-01 dark current and read noise | works; prints a per-detector table (moved here from LMS-OPT-01) |
+| `lms_rad_04_pix_flat` | {class}`lmsaiv_rad04.Rad04` | LMS-RAD-04 pixel flat field (pixel / 5 x 5 box mean) | runs with a built-in synthetic gain pattern as self test; returns `None`, which then overwrites the `as_built` pickle |
+| `lms_opt_01_fov` | {class}`lmsaiv_opt01.Opt01` | LMS-OPT-01 field of view, slice edges and gaps, relative response | works; the subject of the AIT team's notebook |
+| `lms_opt_02_dist` | {class}`lmsaiv_opt02.Opt02` | LMS-OPT-02 iso-alpha / iso-lambda traces, detector gaps and rotation, fiducial points for the distortion fit | runs only on ToySim headers; finds the `Opt01` slice map by name match (the key mismatch at `1547ea4` is fixed) |
+| `lms_opt_03_psf` | {class}`lmsaiv_opt03.Opt03` | LMS-OPT-03 monochromatic PSF | stub: prints "Analysis not yet available" |
+| `lms_opt_04_ghost` | {class}`lmsaiv_opt04.Opt04` | ghosts | stub: prints "Analysis not yet available" |
+| `lms_opt_09_sky` | {class}`lmsaiv_opt09.Opt09` | Leiden sky | draft, fails with a TypeError |
 
 Frames are handled as {class}`lms_mosaic.Mosaic` objects (primary header plus
 four detector HDUs) and selected by substrings of their file names. The only

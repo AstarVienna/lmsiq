@@ -6,10 +6,10 @@ to the API documentation of the object whose docstring carries it.
 
 | Tag | Count |
 |---|---|
-| Open question | 104 |
-| Inconsistency | 211 |
-| Bug | 180 |
-| Clean-up | 277 |
+| Open question | 109 |
+| Inconsistency | 219 |
+| Bug | 181 |
+| Clean-up | 282 |
 
 ## Open questions
 
@@ -67,6 +67,7 @@ Things the code does not settle and that need the author or a document to answer
 
 - {mod}`lms_transform`: in extended mode several extensions may share the same ``EXTNAME`` (same ``slice_no``, different ``ech_ord``) if a spectral slice receives more than one order; ``Filer.read_svd_transforms`` reads by index so this is harmless there, but name-based access would be ambiguous.
 - {py:obj}`lms_transform.Transform.create_affines`: the translation column ``(sx*x_org, sy*y_org)`` is not rotated, so a non-zero ``theta_offsets[i]`` rotates about the mosaic origin rather than about the detector's own reference corner. ``lmsaiv_opt02`` calls this with measured offsets; whether that is the intended pivot should be confirmed.
+- {py:obj}`lms_transform.Transform.make_hdu_primary`: the purpose of the empty ``W`` card added in upstream commit 9b6143a is not recorded; it looks like an unfinished edit.
 
 ### `lms_wcal`
 
@@ -75,12 +76,12 @@ Things the code does not settle and that need the author or a document to answer
 
 ### `lmsaiv`
 
-- {mod}`lmsaiv`: ``do_plot=False`` is passed to ``OptTests.run`` and forwarded to ``Opt01.fov``, which ignores it; plots are governed by ``Globals.debug_level`` instead.
+- {mod}`lmsaiv`: ``do_plot=False`` is passed to ``OptTests.get_test``, which ignores it, and the analysis method is then called as ``method(title, as_built)`` without keyword arguments; plotting is governed by ``Globals.debug_level`` only.
 
 ### `lmsaiv_opt01`
 
 - {py:obj}`lmsaiv_opt01.Opt01.__init__`: the instantiation appears to be for initialisation side effects only; nothing in this module relies on it.
-- {py:obj}`lmsaiv_opt01.Opt01._find_fov`: step tags are matched as sub-strings ('step1' would also match 'step10'..'step19'); the steps used here avoid the collision.
+- {py:obj}`lmsaiv_opt01.Opt01.calculate_fov`: step tags are matched as sub-strings ('step1' would also match 'step10'..'step19'); the steps used here avoid the collision.
 - {py:obj}`lmsaiv_opt01.Opt01._find_rrf`: the 0.08 um per detector-pair dispersion is a placeholder ('Very approximate dispersion...!'); the ``lmsdist`` transforms or the irdb TRACE_LMS wavelength map would give the real lambda(x, y).
 - {py:obj}`lmsaiv_opt01.Opt01._find_slices`: the loop ends only after the expected number of slices has been counted; a missed slice shifts the numbering of all slices above it on that column.
 - {py:obj}`lmsaiv_opt01.Opt01._find_slices`: the noise estimate assumes rows 0:70 are unilluminated on every detector.
@@ -106,19 +107,16 @@ Things the code does not settle and that need the author or a document to answer
 
 ### `lmsaiv_opt09`
 
-- {mod}`lmsaiv_opt09`: which AIT test LMS-OPT-09 is (the registry has no entry; the commented-out 'lms_opt_08' is 'Out-of-field straylight').
+- {mod}`lmsaiv_opt09`: the registry title is 'Leiden sky', but the draft computes a step difference image; what the LMS-OPT-09 analysis should measure is not documented.
 
 ### `lmsaiv_opt_tests`
 
-- {mod}`lmsaiv_opt_tests`: ``Filer.write_pickle`` does not create the '../output/asbuilt' folder; on a clean checkout the first ``run`` appears to fail with FileNotFoundError when writing the pickle.
+- {mod}`lmsaiv_opt_tests`: ``Filer.write_pickle`` does not create the '../output/asbuilt' folder; on a clean checkout the first run appears to fail with FileNotFoundError when writing the pickle.
+- {py:obj}`lmsaiv_opt_tests.OptTests.__init__`: an 'lms_rad_03_inst_bgd' (instrument background) entry is present but commented out; there is no ``Rad03`` module yet.
 
 ### `lmsaiv_opt_tools`
 
-- {mod}`lmsaiv_opt_tools`: ``dark_stats`` divides the standard deviation by sqrt(2 / ndit), which is the read-noise estimator for the difference of two frames; it is applied to single dark frames here.
-- {mod}`lmsaiv_opt_tools`: the ToySim writer (``lmssim_toy``) does not set 'HIERARCH ESO DET DIT' / 'NDIT'; the values appear to come unchanged from the '../config/sim_template.fits' header rather than from the simulated ``lms_dit``.
 - {py:obj}`lmsaiv_opt_tools.OptTools.median_subtract`: with fewer than three exposures the median is not a robust background (for two frames it is their mean), and lines present at the same column in most frames survive into the background.
-- {py:obj}`lmsaiv_opt_tools.OptTools.dark_stats`: the dark current uses ``dit`` alone; if the frame is a sum over ``ndit`` sub-integrations the divisor should be ``dit * ndit`` (``t_int`` is computed but only printed).
-- {py:obj}`lmsaiv_opt_tools.OptTools.dark_stats`: the sqrt(2 / ndit) factor is appropriate for the difference of two frames, not for a single frame's standard deviation.
 - {py:obj}`lmsaiv_opt_tools.OptTools.transform_detector_image`: ``affine_transform`` is called without an ``offset``, so the rotation is about array element (0, 0), not the detector centre.
 - {py:obj}`lmsaiv_opt_tools.OptTools._find_thetas`: ``theta_err`` uses only the variance of the linear coefficient ``pcov[1][1]``; the contributions of the quadratic and cubic terms of the 4-coefficient fit to the gradient at ``u_mean`` are ignored.
 
@@ -126,6 +124,17 @@ Things the code does not settle and that need the author or a document to answer
 
 - {py:obj}`lmsaiv_plot.Plot.mosaic`: with ``origin='lower'`` and an ``extent`` starting at ``y_min - 1.5`` the image appears offset by one row relative to the overlaid coordinates; not verified.
 - {py:obj}`lmsaiv_plot.Plot.det_traces`: the traces are not filtered by ``config_id``; all supplied traces are drawn whatever their 'lms_config_id'.
+
+### `lmsaiv_rad01`
+
+- {mod}`lmsaiv_rad01`: ``dark_stats`` divides the standard deviation by sqrt(2 / ndit), which is the read-noise estimator for the difference of two frames; it is applied to single dark frames here.
+- {mod}`lmsaiv_rad01`: the ToySim writer (``lmssim_toy``) does not set 'HIERARCH ESO DET DIT' / 'NDIT'; the values appear to come unchanged from the '../config/sim_template.fits' header rather than from the simulated ``lms_dit``.
+- {py:obj}`lmsaiv_rad01.Rad01.dark_stats`: the dark current uses ``dit`` alone; if the frame is a sum over ``ndit`` sub-integrations the divisor should be ``dit * ndit`` (``t_int`` is computed but only printed).
+- {py:obj}`lmsaiv_rad01.Rad01.dark_stats`: the sqrt(2 / ndit) factor is appropriate for the difference of two frames, not for a single frame's standard deviation.
+
+### `lmsaiv_rad04`
+
+- {py:obj}`lmsaiv_rad04.Rad04.pix_flat`: the box mean includes the pixel itself, so a pixel with gain g is recovered as g / (1 + (g - 1) / 25) rather than g; a leave-one-out mean or median filter would avoid the bias.
 
 ### `lmsdist`
 
@@ -175,6 +184,7 @@ Things the code does not settle and that need the author or a document to answer
 
 ### `lmsiq_analyse`
 
+- {py:obj}`lmsiq_analyse.Analyse.get_dispersion`: the ray series are taken unfiltered (``get_series(tag, {})``, upstream fix for the earlier ``KeyError`` with ``ds_dict`` as filter), so consecutive rays may belong to different slices or echelle orders and the first differences include large jumps of either sign; the result depends on which differences fall next to ``wave`` after sorting.
 - {py:obj}`lmsiq_analyse.Analyse.eed`: an unknown ``axis_name`` leaves ``aperture = None`` and :meth:`exact_rectangular` raises ``AttributeError``.
 
 ### `lmsiq_cuber`
@@ -206,6 +216,7 @@ Things the code does not settle and that need the author or a document to answer
 - {py:obj}`lmssim_model.Model.make_tau_blaze`: ``numpy.sinc(x)`` is already ``sin(pi x) / (pi x)``, so the explicit ``math.pi`` in the argument applies pi twice and the profile is pi times narrower than the textbook blaze function.  The former docstring's "w_width = 0.042 w_blaze from SPIE model" is not what the code does.
 - {py:obj}`lmssim_model.Model.load_psf_dict`: ``psf_sum`` is accumulated from the already down-sampled PSFs, so ``norm_factor = oversampling**2 / psf_sum`` makes the set sum to 16, not to unity as the comment says.
 - {py:obj}`lmssim_model.Model.load_psf_dict`: in extended mode the three field positions (``field001``-``field003``) load the same three slice offsets in turn, each overwriting the previous entries while ``psf_sum`` keeps accumulating, so the final normalisation is inconsistent.
+- {py:obj}`lmssim_model.Model.fit_beta_weights`: the evaluation point ``slice_offset + 1 - beta_phase`` reverses the sign convention of ``beta_phase`` relative to the fit abscissa ``slice_offset + 0.5`` (they agree only at 0.5); the intent (inline comment 'eg a target at 0.5 -') is unfinished.
 
 ### `lmssim_scope`
 
@@ -287,6 +298,7 @@ Places where two parts of the code, or the code and the instrument description, 
 
 - {mod}`lms_transform`: :meth:`Transform.create_affines` uses ``Globals.det_gap`` (3.0 mm) for the inter-detector gap, whereas ``lms_detector.Detector.mosaic_gap`` is 2.23 mm (and the irdb ``FPA_metis_lms_layout.dat`` implies 2.23 mm from ``x_cen = +-19.547 mm``).  The affines therefore place the detectors 0.77 mm further apart than ``Detector`` does.
 - {py:obj}`lms_transform.Transform.create_affines`: ``Globals.det_gap = 3.0`` mm is used, while ``lms_detector.Detector.mosaic_gap = 2.23`` mm and the irdb layout imply 2.23 mm.  The origin offsets ``xy_nc`` / ``xy_fc`` and hence every pixel coordinate depend on this value.
+- {py:obj}`lms_transform.Transform.make_hdu_primary`: the former exclusion of ``slice_no`` / ``spifu_no`` / ``ech_ord`` keys was removed; a ``spifu_no`` key would now raise KeyError (it has no ``kw_comments`` entry).
 - {py:obj}`lms_transform.Transform.make_hdu_ext`: the matrix order is hard-wired to 4 x 4 here through the column length while ``Globals.svd_order`` is consulted by :meth:`read_matrices`; the two must agree.
 
 ### `lms_wcal`
@@ -296,9 +308,11 @@ Places where two parts of the code, or the code and the instrument description, 
 
 ### `lmsaiv_opt01`
 
+- {mod}`lmsaiv_opt01`: three nominal slice maps are stored (one per step group), but ``Opt02.dist`` keeps only the last key that matches 'slice_map_nom' in dictionary order.
 - {mod}`lmsaiv_opt01`: extended-mode field slices are taken as 11..13 in ``_find_slices`` (``slice_order``) while ``Globals.fslice_no_range`` declares 12..14.
 - {mod}`lmsaiv_opt01`: ``Globals.alpha_pix`` = 8.7 mas differs from the irdb METIS_LMS value of 8.2 mas; the FOV printed by ``_calculate_fov`` scales with it.
 - {mod}`lmsaiv_opt01`: ``flood_stats``, ``print_inter_slice`` and ``_parse_abo`` are legacy routines written for the ``(name, hdr, hdus)`` tuple layout and are incompatible with ``lms_mosaic.Mosaic``; ``flood_stats`` is the only place the METIS-3667 check (> 0.500 arcsec2, aspect 1:1..2:1) is printed, and it is not called from ``fov``.
+- {py:obj}`lmsaiv_opt01.Opt01.calculate_fov`: the coadded flood keeps the primary header of the first step in the group, so the slice-map name records that step's echelle order and angle only.
 - {py:obj}`lmsaiv_opt01.Opt01._find_slices`: extended-mode field slices 11..13 here versus ``Globals.fslice_no_range[extended]`` = 12..14.
 - {py:obj}`lmsaiv_opt01.Opt01._find_slices`: local ``gap`` = 15 (``gap_hw`` = 7) versus ``Globals.intra_slice_gap`` = 20.
 - {py:obj}`lmsaiv_opt01.Opt01._calculate_fov`: ``Globals.alpha_pix`` = 8.7 mas versus 8.2 mas in the irdb METIS_LMS package.
@@ -310,6 +324,7 @@ Places where two parts of the code, or the code and the instrument description, 
 
 ### `lmsaiv_opt02`
 
+- {mod}`lmsaiv_opt02`: the slice map is found by sub-string search for 'slice_map_nom' over the ``as_built`` keys and the last match wins; LMS-OPT-01 stores one nominal map per step group, so which one is used depends on dictionary order.
 - {mod}`lmsaiv_opt02`: ``_extract_det_traces`` indexes the slice map with ``Globals.mos_idx[det_no]`` while ``Filer.read_mosaic`` stores ToySim HDUs at ``det_no - 1``; for ToySim data detectors 1 and 2 appear to be paired with each other's slice map.
 - {py:obj}`lmsaiv_opt02.Opt02.dist`: ``sig_mosaic.subtract(bgd_mosaic)`` modifies ``sig_mosaic`` in place, so the 'Signal' plot that follows already shows the background-subtracted image.
 - {py:obj}`lmsaiv_opt02.Opt02.dist`: ``Plot.mosaic`` is called with a ``bounds`` keyword it does not use.
@@ -319,14 +334,14 @@ Places where two parts of the code, or the code and the instrument description, 
 
 ### `lmsaiv_opt03`
 
-- {mod}`lmsaiv_opt03`: ``psf(test_name, title, as_built, **kwargs)`` does not match the ``method(title, as_built, **kwargs)`` call in ``OptTests.run`` (TypeError: missing 'as_built').
-- {mod}`lmsaiv_opt03`: file tag 'flood' does not match the 'flat_bb' naming of ``lms_obs_map``; tuple unpacking of mosaics is incompatible with ``lms_mosaic.Mosaic``; ``as_built['slice_map']`` differs from the ``slice_map_...`` keys used by LMS-OPT-01 / LMS-OPT-02.
+- {mod}`lmsaiv_opt03`: ``psf(test_name, as_built, **kwargs)`` is called by ``lmsaiv.main`` as ``method(title, as_built)``, so the registry title arrives as ``test_name``.
+- {mod}`lmsaiv_opt03`: (draft code) file tag 'flood' does not match the 'flat_bb' naming of ``lms_obs_map``; tuple unpacking of mosaics is incompatible with ``lms_mosaic.Mosaic``; ``as_built['slice_map']`` differs from the ``slice_map_...`` names used by LMS-OPT-01 / LMS-OPT-02.
+- {py:obj}`lmsaiv_opt03.Opt03.psf`: the signature has no ``title`` parameter, but the caller uses ``method(title, as_built)``, so the title arrives as ``test_name``.
 - {py:obj}`lmsaiv_opt03.Opt03._parse_abo`: current file names from ``lms_obs_map`` use 'bb_iso_alpha_a{p|n}NNN_b{p|n}NNN' with no '_grid' or '_o' tags, so ``str.find`` returns -1 and the parse is meaningless for them.
 
 ### `lmsaiv_opt04`
 
-- {mod}`lmsaiv_opt04`: ``test_name`` is 'lms_opt_03', not 'lms_opt_04'; this may be intentional (ghosts found in LMS-OPT-03 data) but the registry key 'lms_opt_04_ghost' makes ``OptTests.run`` list 'lms_opt_04' files.
-- {mod}`lmsaiv_opt04`: step tags 'Step1' / 'Step2' are capitalised while ``lms_obs_map`` generates lower-case 'step1' tags, and 'step1' also matches 'step10'.. as a sub-string.
+- {mod}`lmsaiv_opt04`: (draft code) step tags 'Step1' / 'Step2' are capitalised while ``lms_obs_map`` generates lower-case 'step1' tags, and 'step1' also matches 'step10'.. as a sub-string.
 
 ### `lmsaiv_opt09`
 
@@ -334,14 +349,13 @@ Places where two parts of the code, or the code and the instrument description, 
 
 ### `lmsaiv_opt_tests`
 
-- {mod}`lmsaiv_opt_tests`: ``OptTests.run`` calls the registered method as ``method(title, as_built, **kwargs)`` but ``Opt03.psf`` is declared as ``psf(test_name, title, as_built, **kwargs)``, so 'lms_opt_03_psf' fails with a TypeError before doing anything.
-- {py:obj}`lmsaiv_opt_tests.OptTests.run`: the ``cap_name[0:10]`` slice assumes the ten-character 'lms_opt_NN' test-name format.
+- {mod}`lmsaiv_opt_tests`: ``Opt03.psf`` is declared as ``psf(test_name, as_built, **kwargs)`` while every other method takes ``(title, as_built, **kwargs)``.
+- {py:obj}`lmsaiv_opt_tests.OptTests.get_test`: the ``cap_name[0:10]`` slice assumes the ten-character 'lms_xxx_NN' test-name format.
 
 ### `lmsaiv_opt_tools`
 
 - {mod}`lmsaiv_opt_tools`: ``copy_mosaic`` unpacks the legacy ``(file_name, hdr, hdus)`` tuple and cannot accept a ``Mosaic`` (use ``Mosaic.copy`` instead); it is still called by ``Opt01.flood_stats`` and ``Opt03.psf``.
 - {py:obj}`lmsaiv_opt_tools.OptTools.copy_mosaic`: unpacking a ``Mosaic`` object as a 3-tuple raises TypeError; the modern equivalent is ``Mosaic.copy``.
-- {py:obj}`lmsaiv_opt_tools.OptTools.dark_stats`: the header line formats ``ndit`` with '{:d}', which raises ValueError if the keyword is stored as a float.
 - {py:obj}`lmsaiv_opt_tools.OptTools.transform_detector_image`: indexes the HDU list with ``det_no - 1`` while ``Opt02._extract_det_traces`` uses ``Globals.mos_idx[det_no]``.
 - {py:obj}`lmsaiv_opt_tools.OptTools._find_thetas`: the original docstring mentioned a 'u_fiducial' location; the code evaluates at ``u_mean``.
 
@@ -353,14 +367,25 @@ Places where two parts of the code, or the code and the instrument description, 
 - {py:obj}`lmsaiv_plot.Plot.histograms`: panes follow ``hdu_list`` order (index ``i``) whereas ``mosaic`` uses the 'ID' keyword; the two agree for ToySim data only (see ``Filer.read_mosaic``).
 - {py:obj}`lmsaiv_plot.Plot.profiles`: the legacy ``Opt01.flood_stats`` builds profile tuples with a different layout ``(title, x_indices, y_signal, [on_points, off_points])`` which this function cannot unpack.
 
+### `lmsaiv_rad01`
+
+- {py:obj}`lmsaiv_rad01.Rad01.dark`: the upstream docstring was copied from ``Opt01.fov`` ("Field of view calculation ... Populates the slice bounds map"); it has been replaced here.
+- {py:obj}`lmsaiv_rad01.Rad01.dark_stats`: the header line formats ``ndit`` with '{:d}', which raises ValueError if the keyword is stored as a float.
+
+### `lmsaiv_rad04`
+
+- {py:obj}`lmsaiv_rad04.Rad04.pix_flat`: the docstring says pixels below 10 % of the median are rejected; the code uses ``cut_level = 0.05`` (5 %).
+- {py:obj}`lmsaiv_rad04.Rad04.pix_flat`: ``convolve2d`` propagates NaN, so every pixel within two pixels of a rejected one (slice gaps, detector edges of the illuminated area) becomes NaN in the flat, not just the rejected pixels.
+- {py:obj}`lmsaiv_rad04.Rad04.pix_flat`: ``pix_flat.hdu_list[det_idx]`` is indexed by the 'ID' keyword while the input HDUs are iterated in list order; the two agree for ToySim files only (see ``Filer.read_mosaic``).
+
 ### `lmsdist`
 
-- {mod}`lmsdist`: all run control is hard-coded inside :func:`run` (``is_ait_data = False``, ``opticon = Globals.nominal``, ``generate_transforms = plot_dispersion = fit_transforms = evaluate_transforms = test_transform_fit = True``), and the ``*args`` are only printed.  Consequently ``lmsaiv_opt02.Opt02`` calling ``lmsdist.run()`` to fit the AIT coordinate CSV actually refits the nominal Zemax data.
+- {mod}`lmsdist`: all run control is hard-coded inside :func:`run` (``is_ait_data = False``, ``opticon = Globals.extended``, ``generate_transforms = plot_dispersion = fit_transforms = evaluate_transforms = True``, ``test_transform_fit = False``), and the ``*args`` are only printed.  Consequently ``lmsaiv_opt02.Opt02`` calling ``lmsdist.run()`` to fit the AIT coordinate CSV actually refits the extended-mode Zemax data.
 - {mod}`lmsdist`: the ``fit_transforms`` comments say the prism-angle fit is for field slice 13, but ``PolyFit.create_polynomial_surface_fits`` uses slice 12 for the ``n*lambda`` surface.
 - {mod}`lmsdist`: ``Globals.wpa_fit_order = {nominal: 6, extended: 3}`` is the coefficient COUNT in ``PolyFit.create_polynomial_fit`` (degree 5 / 2).
 - {mod}`lmsdist`: ``Globals.det_gap = 3.0`` mm feeds the affines and masks used here, whereas ``lms_detector.Detector.mosaic_gap = 2.23`` mm and the irdb imply 2.23 mm.
 - {mod}`lmsdist`: the nominal/extended prism-angle offset correction (``nom_ext_pa_corr``) is computed only at debug level ``'low'``, after ``Filer.write_fit_parameters`` has already been called, so the written extended-mode ``WP`` table never includes it; the three hard-coded ``ext_ea0_waves`` / ``ext_ea0_pas`` values are undocumented.
-- {py:obj}`lmsdist.run`: ``is_ait_data`` and ``opticon`` are hard-coded; there is no way for a caller to request the AIT CSV or the extended mode without editing the source, so ``lmsaiv_opt02``'s call refits Zemax data.
+- {py:obj}`lmsdist.run`: ``is_ait_data`` (False) and ``opticon`` (``Globals.extended`` as of upstream 9b6143a) are hard-coded; there is no way for a caller to choose without editing the source, so ``lmsaiv_opt02``'s call refits extended-mode Zemax data although LMS-OPT-02 analyses nominal-mode frames.
 
 ### `lmsdist_plot`
 
@@ -435,7 +460,6 @@ Places where two parts of the code, or the code and the instrument description, 
 - {mod}`lmsiq_analyse`: :meth:`Analyse.eed` accepts but ignores a ``normalise`` keyword that :mod:`lmsiq_cuber` passes as ``'to_average'``; the curves are always normalised by the image total.
 - {py:obj}`lmsiq_analyse.Analyse.extract_cube_strips`: the band is centred on the geometric image centre, not on the PSF centroid.
 - {py:obj}`lmsiq_analyse.Analyse._gauss`: no constant/baseline term, so a profile with a non-zero background biases the fitted FWHM upward.  The pipeline's ``drl.lines.fit_gaussian`` includes a baseline.
-- {py:obj}`lmsiq_analyse.Analyse.get_dispersion`: consecutive rays in the series are not guaranteed to be adjacent in x, so individual ``dw/dx`` differences can be noisy or of either sign; only the interpolated value at ``wave`` is used.
 - {py:obj}`lmsiq_analyse.Analyse.get_dispersion`: the original docstring spoke of interpolating ``dw_dx_mean`` values over all traces; the code uses a single nearest trace.
 - {py:obj}`lmsiq_analyse.Analyse.find_fwhm_multi`: the error flag in both tuples is hard-wired ``False`` even if every image failed (in which case ``np.mean`` of an empty array returns ``nan`` with a warning).
 - {py:obj}`lmsiq_analyse.Analyse.find_fwhm`: ``rc_lo`` is computed from ``n_cols`` for both axes, so the method assumes a square image; the band is centred on the image centre, not the PSF centroid.
@@ -533,6 +557,7 @@ Places where two parts of the code, or the code and the instrument description, 
 - {mod}`lmssim_model`: the ``'tau'`` values in ``Model.bgd_srcs`` are never read; :meth:`Model.get_flux` applies ``Model.tau_whs`` to every black body (including the 70 K CFO mask and 300 K ambient mask that the table assigns ``tau_cfo_lms`` and ``tau_wfp``) and to the lasers, and ``Model.tau_sky`` to the sky.
 - {mod}`lmssim_model`: black-body and laser fluxes use pi * (39 / 2)^2 = 1194.6 m^2 as the telescope area, the sky uses ``Globals.elt_area`` = 1350 m^2.
 - {py:obj}`lmssim_model.Model.get_flux`: the ``'tau'`` entries of ``Model.bgd_srcs`` are ignored; ``tau_whs`` is applied to the 70 K and 300 K mask black bodies too.
+- {py:obj}`lmssim_model.Model.load_psf_dict`: ToySim reads its PSFs from the ``..._sim`` copy of the ``lmsiq`` data folder (upstream 9b6143a), while the module docstring and ``lmsiq`` use the folder without the suffix; the expected content of the ``_sim`` folder is not documented.
 
 ### `lmssim_scope`
 
@@ -612,13 +637,15 @@ Behaviour that is wrong as written. Documented, not fixed.
 - {py:obj}`lms_wcal.Wcal.find_dispersion`: the return value is the hard-coded constant ``1.0``.
 - {py:obj}`lms_wcal.Wcal.get_polyfit_transform`: nothing in the repository produces the 6-D ``poly`` layout; ``lmsdist_util.Util.read_polyfits_file`` returns a 2-D array and ``lmsdist_util.Util.find_polyfit`` a 3-D one.  This method cannot be exercised with current outputs.
 
+### `lmsaiv`
+
+- {mod}`lmsaiv`: ``Opt03.psf`` has the signature ``(test_name, as_built, **kwargs)``, so the ``method(title, as_built)`` call passes the registry title as ``test_name``.  Harmless while the method is a stub.
+- {mod}`lmsaiv`: ``Rad04.pix_flat`` returns None, so selecting 'lms_rad_04_pix_flat' pickles None as the 'as built' object and the next analysis that reads it fails.
+
 ### `lmsaiv_opt01`
 
-- {mod}`lmsaiv_opt01`: ``Opt02.dist`` reads ``as_built['slice_map_nominal']`` but this module stores 'slice_map_nom' + step tag (e.g. 'slice_map_nomstep3'), so the LMS-OPT-01 -> LMS-OPT-02 chain is broken as committed.
 - {mod}`lmsaiv_opt01`: ``_find_rrf`` multiplies 'HIERARCH AIT PIXEL_PITCH' by ``u.mm`` although ``lmssim_toy`` writes ``Globals.nom_pix_pitch`` = 18.0 (microns), making the pixel size 1000x too large and the wavelength ramp wrong.
-- {py:obj}`lmsaiv_opt01.Opt01._analyse_darks`: if no dark files are found ``darks`` is empty and ``darks[0]`` raises IndexError at debug level 'low'.
-- {py:obj}`lmsaiv_opt01.Opt01._find_fov`: the stored key ('slice_map_nomstep3', ...) does not match the 'slice_map_nominal' key read by ``Opt02.dist``.
-- {py:obj}`lmsaiv_opt01.Opt01._find_fov`: a missing flat file makes ``read_mosaic_list(...)[0]`` raise IndexError; both nominal and extended groups must be present.
+- {py:obj}`lmsaiv_opt01.Opt01.calculate_fov`: a missing flat file makes ``read_mosaic_list(...)[0]`` raise IndexError; every step of every group must be present.
 - {py:obj}`lmsaiv_opt01.Opt01._find_rrf`: 'HIERARCH AIT PIXEL_PITCH' is written by ``lmssim_toy`` as ``Globals.nom_pix_pitch`` = 18.0 (microns) but is multiplied by ``u.mm`` here, so ``c_det_cen`` is about 1.1 instead of about 1086 columns and the wavelength ramp is offset.
 - {py:obj}`lmsaiv_opt01.Opt01._find_slices`: when no row exceeds the threshold the IndexError is caught and a message printed, but the loop continues with the stale ``row_lo`` and ``more_rows`` still True, so the following ``argwhere(...)[0][0]`` can raise an uncaught IndexError.
 - {py:obj}`lmsaiv_opt01.Opt01._make_slice_map`: ``idxs = np.argwhere(slice_coords['slice_nos'] == slice_no)`` is not restricted to the current detector, so in nominal mode (where detectors 1 and 2, and 3 and 4, carry the same slice numbers) the edge fit for one detector mixes in the measurements of its partner.
@@ -627,7 +654,7 @@ Behaviour that is wrong as written. Documented, not fixed.
 
 ### `lmsaiv_opt02`
 
-- {mod}`lmsaiv_opt02`: ``dist`` requires ``as_built['slice_map_nominal']`` but ``lmsaiv_opt01`` stores 'slice_map_nomstepN' keys, so the chain from LMS-OPT-01 is broken.
+- {mod}`lmsaiv_opt02`: if no slice map matches, a message is printed but the analysis continues with ``slice_map = None`` and fails in ``_build_slice_row_dict`` (AttributeError).
 - {mod}`lmsaiv_opt02`: ``lmsdist.run()`` (the ``calculate_transforms`` step) has ``is_ait_data = False`` hard-coded, so it refits the Zemax ray traces rather than the AIT CSV written here; the AIT transforms compared against Zemax are therefore never produced by this chain.
 - {mod}`lmsaiv_opt02`: the ``test_transforms`` block calls ``Util.slice_to_efp_y(slice_no, beta_phase, opticon)`` with three arguments while the function takes two, and discards the forward-projected points.
 - {py:obj}`lmsaiv_opt02.Opt02.dist`: with ``overwrite_as_built_traces=False`` the archived list is extended in place but then overwritten by the new list, so the option has no effect.
@@ -636,32 +663,32 @@ Behaviour that is wrong as written. Documented, not fixed.
 - {py:obj}`lmsaiv_opt02.Opt02.dist`: the AIT transforms are read (step 6) before ``lmsdist.run()`` (step 7) is called, and ``lmsdist.run`` fits Zemax data anyway (``is_ait_data = False`` hard-coded), so no AIT transform FITS files are produced by this chain.
 - {py:obj}`lmsaiv_opt02.Opt02._find_detector_gaps`: the bare ``except`` clauses print 'Failed curve_fit' and then use the undefined ``lam_popt_l`` / ``col_popt_r``, raising TypeError / NameError anyway.
 - {py:obj}`lmsaiv_opt02.Opt02._find_detector_gaps`: ``except OptimizeWarning`` cannot catch a warning that ``curve_fit`` only emits (not raises) unless warnings are turned into errors; a failed fit leaves ``popt`` undefined.
+- {py:obj}`lmsaiv_opt02.Opt02._find_detector_gaps`: (minor) the slope is evaluated with ``Globals.polynomial(mean_gap, *popt, gradient=True)``, i.e. at x = mean gap instead of a row value; harmless for a linear fit, wrong for higher orders.
+- {py:obj}`lmsaiv_opt02.Opt02._print_det_traces`: (labels only) ``'row' if type == 'iso-lambda' else 'col' + '_mean'`` binds as ``'row' if ... else ('col' + '_mean')``, so the '_mean' / '_fiducial' suffixes are only appended in the else branch.
 - {py:obj}`lmsaiv_opt02.Opt02._get_trace_coordinates`: fit failures are swallowed by a bare ``except: a = 1``; the sample is silently dropped and ``is_error`` is never set to True.
 - {py:obj}`lmsaiv_opt02.Opt02._find_trace_intersections`: ``Util.dfp_to_mfp`` documents that all points are assumed to lie on the detector of the first point, but ``points`` accumulates points from all four detectors of a configuration (outer loop over ``det_no``), so the mosaic coordinates of points on later detectors appear to use the wrong affine.
 
 ### `lmsaiv_opt03`
 
-- {mod}`lmsaiv_opt03`: ``Filer.read_mosaic_list(inc_tags)`` passes one positional argument where ``(folder, inc_tags)`` is required (IndexError on ``args[0]`` inside ``read_mosaic_list``), and ``Filer.read_mosaic_list(inc_tags=[...])`` uses a keyword the function does not accept (TypeError).
-- {mod}`lmsaiv_opt03`: ``OptTools.flood_stats`` does not exist (the legacy routine is ``lmsaiv_opt01.Opt01.flood_stats``).
-- {mod}`lmsaiv_opt03`: ``u`` (astropy.units) and ``Model`` (lmssim_model) are used but not imported.
-- {mod}`lmsaiv_opt03`: keywords 'X_SIZE', 'Y_SIZE' and 'HIERARCH pixel_size' are not written by ``lmssim_toy`` (which writes 'X_CEN', 'Y_CEN' and 'HIERARCH AIT PIXEL_PITCH').
+- {mod}`lmsaiv_opt03`: (draft code) ``Filer.read_mosaic_list(inc_tags=[...])`` uses a keyword the function does not accept (TypeError); ``title`` is undefined; ``OptTools.dark_stats`` was removed (now ``Rad01.dark_stats``) and ``OptTools.flood_stats`` never existed (the legacy routine is ``lmsaiv_opt01.Opt01.flood_stats``).
+- {mod}`lmsaiv_opt03`: (draft code) ``u`` (astropy.units) and ``Model`` (lmssim_model) are used but not imported.
+- {mod}`lmsaiv_opt03`: (draft code) keywords 'X_SIZE', 'Y_SIZE' and 'HIERARCH pixel_size' are not written by ``lmssim_toy`` (which writes 'X_CEN', 'Y_CEN' and 'HIERARCH AIT PIXEL_PITCH').
+- {py:obj}`lmsaiv_opt03.Opt03.psf`: (unreachable draft) ``title`` is undefined, ``OptTools.dark_stats`` no longer exists (moved to ``Rad01.dark_stats``), and ``Filer.read_mosaic_list(inc_tags=...)`` uses a keyword the function does not accept.
 
 ### `lmsaiv_opt04`
 
-- {mod}`lmsaiv_opt04`: ``inc_tags + ref_step`` adds a list and a str -> TypeError before any file is read (should be ``inc_tags + [ref_step]``).
-- {mod}`lmsaiv_opt04`: ``ghost`` returns None, so ``OptTests.run`` pickles None as the 'as built' object.
-- {py:obj}`lmsaiv_opt04.Opt04.ghost`: ``inc_tags + ref_step`` raises TypeError (list + str).
+- {mod}`lmsaiv_opt04`: (draft code) ``inc_tags + ref_step`` adds a list and a str -> TypeError (should be ``inc_tags + [ref_step]``).
+- {py:obj}`lmsaiv_opt04.Opt04.ghost`: (unreachable draft) ``inc_tags + ref_step`` raises TypeError (list + str).
 
 ### `lmsaiv_opt09`
 
 - {mod}`lmsaiv_opt09`: ``inc_tags + ref_step`` adds a list and a str -> TypeError.
-- {mod}`lmsaiv_opt09`: ``sky`` returns None instead of ``as_built``.
+- {mod}`lmsaiv_opt09`: ``sky`` returns None instead of ``as_built`` (were it to get that far, ``lmsaiv.main`` would pickle None as the 'as built' object).
 - {py:obj}`lmsaiv_opt09.Opt09.sky`: ``inc_tags + ref_step`` raises TypeError (list + str).
 
 ### `lmsaiv_opt_tests`
 
-- {mod}`lmsaiv_opt_tests`: ``Opt04.ghost`` returns None, so running 'lms_opt_04_ghost' pickles None as the 'as built' object and breaks every subsequent analysis that indexes ``as_built``.
-- {py:obj}`lmsaiv_opt_tests.OptTests.run`: the return value of ``method`` is pickled without checking that it is a dict; ``Opt04.ghost`` returns None (see module notes).
+- {mod}`lmsaiv_opt_tests`: ``Rad04.pix_flat`` and ``Opt09.sky`` return None, so running them through ``lmsaiv.main`` pickles None as the 'as built' object and breaks every subsequent analysis that indexes ``as_built``.
 
 ### `lmsaiv_opt_tools`
 
@@ -672,9 +699,19 @@ Behaviour that is wrong as written. Documented, not fixed.
 
 - {mod}`lmsaiv_plot`: in ``mosaic`` the ``overlay`` default is ``{}`` but the ``ImageGrid`` / colour-bar branch tests ``overlay is None``, so it is dead code and no colour bar is ever drawn.
 - {mod}`lmsaiv_plot`: ``mosaic`` with the ``sb`` (slice bounds) keyword and no overlay fails with TypeError because ``det_idx`` is only set in the overlay branch.
+- {py:obj}`lmsaiv_plot.Plot.gap_data`: (cosmetic) the x-label condition ``pane == 2 or pane == 3`` is never true for a two-pane figure, so no 'Row' label appears.
 - {py:obj}`lmsaiv_plot.Plot.mosaic`: ``overlay`` defaults to ``{}`` so ``if overlay is None`` is never true; the ``ImageGrid`` branch with a shared colour bar is dead and the ``plt.subplots`` branch is always used.
 - {py:obj}`lmsaiv_plot.Plot.mosaic`: ``sb`` without an overlay uses ``det_idx`` (None) -> TypeError.
 - {py:obj}`lmsaiv_plot.Plot.mosaic`: unused overlay panes are removed with ``axes[ax_idx]`` on the 2-D ``axes`` array returned by ``plt.subplots`` (IndexError when ``n_rows > 1`` and ``n_axes < n_panes``), and the pane-count formula ``n_rows = n_axes // 3 + 1`` with two columns appears to allocate too few panes for some trace counts (e.g. five).
+
+### `lmsaiv_rad01`
+
+- {py:obj}`lmsaiv_rad01.Rad01.analyse_darks`: if no dark files are found ``darks`` is empty and ``darks[0]`` raises IndexError at debug level 'low'.
+
+### `lmsaiv_rad04`
+
+- {mod}`lmsaiv_rad04`: ``pix_flat`` returns None, so running it through ``lmsaiv.main`` pickles None as the 'as built' object.
+- {py:obj}`lmsaiv_rad04.Rad04.pix_flat`: the edge correction of ``cnv_weights`` subtracts a full row and a full column of the box at the corners, so corner weights are too small (e.g. 5 instead of 9 at the detector corner); the column correction also uses the row count ``nr`` (harmless for square detectors).
 
 ### `lmsdist`
 
@@ -682,6 +719,7 @@ Behaviour that is wrong as written. Documented, not fixed.
 - {mod}`lmsdist`: in the ``test_transform_fit`` block ``test_waves`` (with the extended-mode override 4.4-4.6 um) is computed but the loop iterates ``np.linspace(2.7, 5.4, 28)`` directly, so extended mode is tested at nominal wavelengths.
 - {mod}`lmsdist`: ``ext_coeffs_corr = nom_coeffs`` aliases the nominal coefficient list and then mutates ``[0]`` in place.
 - {mod}`lmsdist`: the ``mfp_plot_points`` dict passed to ``Plot.plot_mfp_points`` lacks the ``'spifu_no'`` key that function requires (``KeyError`` at debug ``'low'``).
+- {py:obj}`lmsdist.run`: at debug ``'low'`` the last coverage plot uses ``colour_by='slice'``, which raises AttributeError in ``Plot.series`` (``Globals.n_slices`` does not exist).
 - {py:obj}`lmsdist.run`: printed ``a_rms`` is always 0 (see module notes).
 - {py:obj}`lmsdist.run`: ``test_waves`` is computed but not iterated over.
 - {py:obj}`lmsdist.run`: ``mfp_plot_points`` lacks ``'spifu_no'`` required by ``Plot.plot_mfp_points``.
@@ -734,13 +772,9 @@ Behaviour that is wrong as written. Documented, not fixed.
 - {py:obj}`lmsdist_util.Util.find_dispersion`: references a pre-2023 ``RayTrace`` API; cannot run.
 - {py:obj}`lmsdist_util.Util.find_closest_transforms`: ``'spifu_no'`` KeyError makes the function unusable with transforms produced by the current ``RayTrace`` / ``Transform``; ``lmssim_toy`` still calls it.
 - {py:obj}`lmsdist_util.Util.find_closest_transforms`: ``slice_no != 13`` compares the ENCODED slice number, so in extended mode (``slice_no = 100 * pslice + 13``) no transform ever matches.
+- {py:obj}`lmsdist_util.Util.slice_to_efp_y`: (caller) ``RayTrace.find_wavelength_bounds`` passes the ENCODED slice number, which is wrong in extended mode.
 - {py:obj}`lmsdist_util.Util.mfp_to_dfp`: points with ``mfp_x == 0`` or ``mfp_y == 0`` exactly belong to no quadrant and are silently dropped, shortening the output.
 - {py:obj}`lmsdist_util.Util.test_out_and_back`: multiple stale API references, listed above; cannot run.
-
-### `lmsiq`
-
-- {mod}`lmsiq`: at HEAD this script does not run.  It calls ``iq_filer.set_configuration('iq', opticon)`` and ``dist_filer.set_configuration('distortion', opticon)`` with two arguments, whereas :meth:`lms_filer.Filer.set_configuration` requires three (``analysis_type, opticon, is_ait_data``), so a ``TypeError`` is raised before any analysis starts.  The same two-argument call is made inside :meth:`lmsiq_cuber.Cuber.build`.
-- {py:obj}`lmsiq.main`: see module-level Notes for the ``set_configuration`` arity error.
 
 ### `lmsiq_analyse`
 
@@ -752,7 +786,6 @@ Behaviour that is wrong as written. Documented, not fixed.
 - {class}`lmsiq_analyse.Analyse`: the class attribute is set in ``__init__`` rather than in the class body, so static use without instantiation fails in :meth:`_gauss`.
 - {py:obj}`lmsiq_analyse.Analyse.extract_cube_strips`: ``Cuber.build`` calls this on images that have already been down-sampled to detector pixels but still passes ``oversampling = 4``, so ``zc_hwid = 5`` and 10 detector columns are summed, whereas the comment "spectral width per slice = 2.5 pix" implies a 2-3 detector pixel band.
 - {py:obj}`lmsiq_analyse.Analyse._gauss`: raises ``TypeError`` if ``Analyse.fwhm_sigma`` is still ``None`` (class never instantiated).
-- {py:obj}`lmsiq_analyse.Analyse.get_dispersion`: ``Trace.get_series(tag, series_filter)`` iterates over every key of ``series_filter`` and indexes ``self.series[key]``; ``ds_dict`` contains keys (``'folder'``, ``'config_no'``, ``'file_names'``, ``'debug'``, ...) that are not ray-series columns, so a ``KeyError`` is expected.  Whether this ever ran with an earlier ``Trace`` API is an open question.
 - {py:obj}`lmsiq_analyse.Analyse.find_fwhm_multi`: ``yh_mean`` is always 0.0 because :meth:`_find_fwhm_lin` returns ``yh = 0``.
 - {py:obj}`lmsiq_analyse.Analyse.find_fwhm`: when the Gaussian fit fails ``covar`` is a zero array of shape (4, 3) from :meth:`_fit_gaussian`; ``np.diag`` still yields three zeros so no exception is raised, but the errors are meaningless.
 - {py:obj}`lmsiq_analyse.Analyse._find_fwhm_lin`: ``yh`` is reset to 0.0 after being used, so the returned half-maximum level is always zero.
@@ -764,10 +797,8 @@ Behaviour that is wrong as written. Documented, not fixed.
 
 ### `lmsiq_cuber`
 
-- {mod}`lmsiq_cuber`: :meth:`Cuber.build` calls ``dist_filer.set_configuration('distortion', opticon)`` with two arguments; :meth:`lms_filer.Filer.set_configuration` requires three, so the method raises ``TypeError`` at its first statement after setup.
 - {mod}`lmsiq_cuber`: :meth:`lmsiq_analyse.Analyse.extract_cube_strips` is called on down-sampled (detector-pixel) images with ``oversampling = 4``, so each cube column sums 10 detector columns rather than the 2.5 pixel slice width the comment intends.
 - {mod}`lmsiq_cuber`: if the target slice of a field is not present in the data set, ``field_series`` stays ``None`` and the per-axis assignments ``field_series[axis_tag + ...]`` raise ``TypeError``.
-- {py:obj}`lmsiq_cuber.Cuber.build`: two-argument ``set_configuration`` call (see module Notes).
 - {py:obj}`lmsiq_cuber.Cuber.build`: ``extract_cube_strips`` receives down-sampled images but ``oversampling = 4`` (module Notes).
 - {py:obj}`lmsiq_cuber.Cuber.build`: ``field_series`` is None if ``slice_tgt`` is not in the slice range actually loaded (module Notes).
 - {py:obj}`lmsiq_cuber.Cuber.plot`: ``fig_layouts[optical_path]`` and the limit dictionaries are keyed ``'spifu'`` / ``'nominal'``, but ``lmsiq.main`` passes ``opticon`` which is ``'nominal'`` or ``'extended'`` (``Globals``); the extended path raises ``KeyError``.
@@ -823,12 +854,13 @@ Behaviour that is wrong as written. Documented, not fixed.
 ### `lmssim_toy`
 
 - {mod}`lmssim_toy`: the nearest-transform path (``lms_cfg_code`` not starting with ``'eo'``) calls ``Util.find_closest_transforms(wave_ref, ...)`` with ``wave_ref`` still None (it is only assigned on the fixed-transform path) and then ``PolyFit.wave_to_config(wave_ref.value / 1000., ...)`` although ``wave_to_config`` expects um (``wxo_lim`` = 108-115 um x order); the path fails or mis-scales by 1000.
-- {mod}`lmssim_toy`: ``n_exp = int(sim_config['lms_nexp'])`` is immediately overwritten by ``n_exp = 1``; only one exposure is ever written.
 - {py:obj}`lmssim_toy.Toy.run`: on the nearest-transform path ``wave_ref`` is None when passed to ``Util.find_closest_transforms`` (only the ``'eo'`` path assigns it) and ``wave_to_config`` receives ``wave_ref.value / 1000.`` although it expects um.
-- {py:obj}`lmssim_toy.Toy.run`: ``n_exp`` is forced to 1 after being read from ``lms_nexp``.
-- {py:obj}`lmssim_toy.Toy.run`: ``beta_phase`` and ``beta_weight`` hold the values of the last pinhole processed in step 3 and are applied to every pinhole in step 5, so all pinholes are placed at that one beta phase.
-- {py:obj}`lmssim_toy.Toy.run`: the pinhole wavelengths ``efp_ws`` are those of the last illuminated row of the extended-background loop, not of the pinhole's own trace.
-- {py:obj}`lmssim_toy.Toy.run`: the extended-background loop covers 251 rows (``range(det_row_min, det_row_max + 1)``) for a 250-row strip; an illuminated last row raises ``IndexError``.  Column indices are only guarded against ``> 2047`` and row indices not at all.
+- {py:obj}`lmssim_toy.Toy.run`: ``beta_phase`` (and hence ``beta_weight``) holds the value of the last pinhole processed in step 3 and is applied to every pinhole in step 5; each pinhole is now traced at its own EFP y, but all share one across-slice weight set.
+- {py:obj}`lmssim_toy.Toy.run`: the pinhole wavelengths ``efp_ws`` are those of the last illuminated row returned by :meth:`_get_extended_illumination`, not of the pinhole's own trace.
+- {py:obj}`lmssim_toy.Toy.run`: if the first observation is a dark and the debug level is 'medium' (the ``lmssim`` default), the timing printout references ``ext_ill`` before any assignment (UnboundLocalError); before upstream 9b6143a ``ext_ill`` was zero-filled ahead of the dark check.
+- {py:obj}`lmssim_toy.Toy.run`: column indices are only guarded against ``> 2047`` and row indices (including ``dfp_row + drow``) not at all.
+- {py:obj}`lmssim_toy.Toy._get_extended_illumination`: the loop covers ``n_det_rows_slice + 1`` rows (``range(det_row_min, det_row_max + 1)``) for an ``n_det_rows_slice``-row strip, so an illuminated last row raises IndexError.
+- {py:obj}`lmssim_toy.Toy._get_extended_illumination`: if no row is illuminated ``efp_ws`` is never assigned (UnboundLocalError).
 
 ## Clean-up suggestions
 
@@ -950,12 +982,13 @@ Suggestions for making the code importable, testable and reusable.
 
 ### `lmsaiv`
 
-- {mod}`lmsaiv`: ``cap_name``, ``test_data_folder`` and ``debug_level`` are hard-coded; a command-line interface would let the same script drive LMS-OPT-02 and other data folders.
+- {mod}`lmsaiv`: ``cap_name``, ``test_data_folder`` and ``debug_level`` are hard-coded; a command-line interface would let the same script drive every analysis and data folder.
 
 ### `lmsaiv_opt01`
 
 - {mod}`lmsaiv_opt01`: results (gaps, FOV, RRF) are printed or plotted rather than returned; ``Plot`` calls end in ``plt.show()`` and block.
-- {py:obj}`lmsaiv_opt01.Opt01._find_fov`: the gap list from ``_find_gaps`` is only plotted, never stored; ``Plot.mosaic`` of the slice map is unconditional and blocks.
+- {py:obj}`lmsaiv_opt01.Opt01.calculate_fov`: ``slice_map_key`` ('slice_map_<nom|ext>_stepN') is computed but unused; the map's own name is the key.
+- {py:obj}`lmsaiv_opt01.Opt01.calculate_fov`: the gap list from ``_find_gaps`` is only plotted, never stored; ``Plot.mosaic`` of the slice map is unconditional and blocks.
 - {py:obj}`lmsaiv_opt01.Opt01._find_gaps`: O(n^2) double loop; the table is printed only at debug level 'medium'.
 - {py:obj}`lmsaiv_opt01.Opt01._find_rrf`: ``cols`` spans 0..4095 although each detector has 2048 columns; the extra entries are unused.  Return the RRF mosaic instead of plotting it.
 - {py:obj}`lmsaiv_opt01.Opt01._find_slices`: the previous docstring read 'Calculate fov and return dictionary of slice_bounds'; the FOV is computed in ``_calculate_fov``.
@@ -980,7 +1013,6 @@ Suggestions for making the code importable, testable and reusable.
 
 ### `lmsaiv_opt03`
 
-- {py:obj}`lmsaiv_opt03.Opt03.psf`: the hard-coded ``do_plot = True`` overrides the keyword.
 - {py:obj}`lmsaiv_opt03.Opt03._parse_abo`: duplicated verbatim in ``lmsaiv_opt01.Opt01._parse_abo`` and ``lmsaiv_opt03.Opt03._parse_abo``; neither copy is called.
 
 ### `lmsaiv_opt04`
@@ -993,27 +1025,38 @@ Suggestions for making the code importable, testable and reusable.
 
 ### `lmsaiv_opt_tests`
 
-- {mod}`lmsaiv_opt_tests`: plotting is controlled by the global ``Globals.debug_level``; the ``do_plot`` keyword passed by ``lmsaiv.py`` is forwarded via ``**kwargs`` but ignored by ``Opt01.fov``.
-- {py:obj}`lmsaiv_opt_tests.OptTests.__init__`: the registry could be a class-level constant; building it in ``__init__`` forces callers (``lmsaiv.py``) to instantiate the class before calling the static ``run`` method.
+- {mod}`lmsaiv_opt_tests`: plotting is controlled by the global ``Globals.debug_level``; the ``do_plot`` keyword passed by ``lmsaiv.py`` to ``get_test`` is ignored.
+- {py:obj}`lmsaiv_opt_tests.OptTests.__init__`: the registry could be a class-level constant; building it in ``__init__`` forces callers (``lmsaiv.py``) to instantiate the class before calling the static ``get_test`` method.
 
 ### `lmsaiv_opt_tools`
 
-- {mod}`lmsaiv_opt_tools`: the gain keyword name 'HIERARCH ESO DET3 CHIP GAIN' is hard-coded for all four detectors.
 - {class}`lmsaiv_opt_tools.OptTools`: could be a plain module of functions.
 - {py:obj}`lmsaiv_opt_tools.OptTools.copy_mosaic`: remove once ``Opt01.flood_stats`` and ``Opt03.psf`` are ported or deleted.
-- {py:obj}`lmsaiv_opt_tools.OptTools.dark_stats`: return the statistics (per detector) instead of printing, so they can be used as QC values.
 
 ### `lmsaiv_plot`
 
 - {mod}`lmsaiv_plot`: return the ``Figure`` objects and drop ``plt.show()`` so the plots can be embedded in notebooks / reports and the analyses can run unattended.
 - {py:obj}`lmsaiv_plot.Plot.mosaic`: the ``bounds`` keyword passed by ``Opt02.dist`` is ignored; ``ax_bounds`` is initialised twice and ``det_idx`` is only meaningful in the overlay branch.
 - {py:obj}`lmsaiv_plot.Plot.det_traces`: the axis limits are re-applied for every trace.
+- {py:obj}`lmsaiv_plot.Plot.histograms`: ``n_pts`` is overwritten per detector, so only the last detector's count is returned; ``hist_pars``, ``det_no`` and ``n_vals`` (the NaN count) are computed but unused; ``make_labels`` is ignored; the parameter name ``range`` shadows the builtin.
 - {py:obj}`lmsaiv_plot.Plot.slice_gaps`: the design gap ``Globals.intra_slice_gap`` (20 pixels) is not drawn for comparison.
 - {py:obj}`lmsaiv_plot.Plot.profiles`: ``label`` is unpacked but not used (no legend).
 
+### `lmsaiv_rad01`
+
+- {mod}`lmsaiv_rad01`: ``_find_rrf`` and ``_parse_abo`` are verbatim copies of the ``lmsaiv_opt01`` helpers and are not called here; ``OptTools`` is imported but unused.
+- {mod}`lmsaiv_rad01`: the gain keyword name 'HIERARCH ESO DET3 CHIP GAIN' is hard-coded for all four detectors.
+- {py:obj}`lmsaiv_rad01.Rad01.dark_stats`: return the statistics (per detector) instead of printing, so they can be used as QC values.
+
+### `lmsaiv_rad04`
+
+- {mod}`lmsaiv_rad04`: ``simulate_pix_flat`` is hard-coded True, so real data would also be multiplied by the synthetic pattern.
+- {mod}`lmsaiv_rad04`: ``Model``, ``OptTools``, ``Util``, ``u`` and ``Box1DKernel`` are imported but unused.
+- {py:obj}`lmsaiv_rad04.Rad04.pix_flat`: only ``mosaics[0:4]`` are used; there is no check that any file was found (``super_pix_flat`` stays None -> AttributeError).
+
 ### `lmsdist`
 
-- {mod}`lmsdist`: ``filer.set_configuration`` is called three times with identical arguments; ``use_nominal_wpa_fit``, ``offset_data_list``, ``analysis_type``'s comment about ``'iq'`` / ``'sky'``, and the ``RayTrace(cfg_id=..., silent=True)`` kwargs are unused.
+- {mod}`lmsdist`: ``filer.set_configuration`` is called three times with identical arguments; ``offset_data_list``, ``analysis_type``'s comment about ``'iq'`` / ``'sky'``, and the ``RayTrace(cfg_id=..., silent=True)`` kwargs are unused.
 - {mod}`lmsdist`: relies on ``_ = Transform()`` to create the class-level affines before any mapping is done.
 - {py:obj}`lmsdist.run`: ``Globals.debug_level = base_debug_level`` re-assigns the class attribute directly instead of via ``set_debug_level``; the in-loop ``filer.read_fit_parameters`` calls re-read the same FITS file 34 times.
 
@@ -1065,9 +1108,9 @@ Suggestions for making the code importable, testable and reusable.
 - {py:obj}`lmsdist_trace.RayTrace.__str__`: ``opticon`` is read from the class attribute ``RayTrace.model_config``, not from ``self.lms_config['opticon']``.
 - {py:obj}`lmsdist_trace.RayTrace.create_svd_transforms`: the same ``self.lms_config`` dict object is shared by all transforms (see ``Transform.make_hdu_primary`` side effect).
 - {py:obj}`lmsdist_trace.RayTrace.create_svd_transforms`: the ``n_waves == 0`` check duplicates the ``len(waves) < 1`` check above it.
-- {py:obj}`lmsdist_trace.RayTrace.get_series`: the ``argwhere`` / fancy-index implementation could be a single boolean mask; the commented-out legacy body below the ``return`` should be deleted.
+- {py:obj}`lmsdist_trace.RayTrace.get_series`: the ``argwhere`` / fancy-index implementation could be a single boolean mask.
 - {py:obj}`lmsdist_trace.RayTrace.get_series`: the ``:rtype:`` annotation in the previous docstring was IDE-generated noise.
-- {py:obj}`lmsdist_trace.RayTrace.plot_fit_maps`: ``subset`` / ``field`` are dead parameters; the commented-out panel layout should be removed.
+- {py:obj}`lmsdist_trace.RayTrace.plot_fit_maps`: ``subset`` / ``field`` are dead parameters.  Upstream moved the old multi-panel layout code (``n_rows, n_cols = 7, 4`` ...) from comments into this docstring; it has been dropped here.
 - {py:obj}`lmsdist_trace.RayTrace.plot_fit_maps`: the ``oob`` flag from ``Util.efp_to_mfp`` is ignored.
 - {py:obj}`lmsdist_trace.RayTrace.plot_scatter`: ``lms_config`` is fetched from ``transform`` but the angles are read from ``self.lms_config``.
 - {py:obj}`lmsdist_trace.RayTrace._find_residual`: prints the coefficient array to stdout; not called anywhere in the repository.
@@ -1206,7 +1249,6 @@ Suggestions for making the code importable, testable and reusable.
 ### `lmssim_model`
 
 - {mod}`lmssim_model`: ``load_psf_dict`` is defined twice in the class body; the first definition is dead (shadowed by the second) and would fail anyway because it calls ``Filer(model_config)`` with an argument ``Filer.__init__`` does not accept, and it hard-codes an extended-mode date stamp ('2024061802') that differs from ``Globals.iq_ext_config`` ('2024032401').
-- {mod}`lmssim_model`: ``synphot.units`` is imported twice (as ``synphot.units`` and as ``s_units``) and neither name is used; ``OptimizeWarning`` is unused.
 - {py:obj}`lmssim_model.Model.get_flux`: ``df_ext`` is only assigned for ``sed`` in 'bb', 'sky', 'laser'; any other value raises ``NameError``.
 - {py:obj}`lmssim_model.Model.get_fp_mask`: the returned dictionary is the shared class-level table entry; ``lmssim_toy.Toy.run`` adds ``'fslice_no_pnh_cen'``, ``'efp_xy_pnh_cen'`` and ``'fslice_bounds'`` to it, so state leaks between observations. ``'wcu_closed'`` is unreachable.
 - {py:obj}`lmssim_model.Model.get_fp_mask`: the warning ``print`` passes two arguments, printing a stray space before "not found".
@@ -1221,7 +1263,8 @@ Suggestions for making the code importable, testable and reusable.
 
 ### `lmssim_toy`
 
-- {mod}`lmssim_toy`: ``waves_mosaic`` and ``tau_ech_mosaic`` are filled but never written (the ``debug`` branch writes the image HDUs again under a ``_waves`` name); ``w_pnh``, ``mfp_slice`` / ``oob``, ``psf_sig``, ``n_rows_written``, ``w_illuminated`` and ``fits_waves_out_path`` are unused; the local ``model_configurations`` duplicates ``Globals.model_configurations`` with ``coord_out = ('det_x', 'det_y')`` instead of ``('mfp_x', 'mfp_y')``.
+- {mod}`lmssim_toy`: ``waves_mosaic`` and ``tau_ech_mosaic`` are allocated but no longer filled or written (the ``debug`` branch writes the image HDUs again under a ``_waves`` name); ``w_pnh``, ``mfp_slice`` / ``oob``, ``efp_y_ext_bs``, ``n_rows_written`` and ``fits_waves_out_path`` are unused; the local ``model_configurations`` duplicates ``Globals.model_configurations`` with ``coord_out = ('det_x', 'det_y')`` instead of ``('mfp_x', 'mfp_y')``.
 - {py:obj}`lmssim_toy.Toy.run`: ``ID``, ``CRVAL1D``, ``CRVAL2D``, ``X_CEN``, ``Y_CEN`` and ``ESO DET3 CHIP GAIN`` are written as formatted strings rather than numbers; readers apply ``int()`` / ``float()``.
 - {py:obj}`lmssim_toy.Toy.run`: the ``debug`` branch writes the same image HDUs a second time as ``{cfg_id}_000.fits_waves`` instead of the ``waves_mosaic`` wavelength maps.
+- {py:obj}`lmssim_toy.Toy._get_extended_illumination`: ``n_rows_written`` and ``f_pnh_sed`` are unused.
 

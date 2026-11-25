@@ -67,7 +67,7 @@ class Plot:
 
         Notes
         -----
-        - Bug (cosmetic): the x-label condition ``pane == 2 or pane == 3`` is
+        - Bug: (cosmetic) the x-label condition ``pane == 2 or pane == 3`` is
           never true for a two-pane figure, so no 'Row' label appears.
         - Slices with 'col_gap' None would break ``ax.plot``; the caller only
           passes fitted gaps in practice.

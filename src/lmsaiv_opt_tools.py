@@ -2,21 +2,18 @@
 Shared image-processing helpers for the LMS AIT analyses (lmsaiv program).
 
 Used by ``lmsaiv_opt01`` (LMS-OPT-01), ``lmsaiv_opt02`` (LMS-OPT-02) and the
-non-functional ``lmsaiv_opt03``.  The helpers operate on
+draft code in ``lmsaiv_opt03``.  The former ``dark_stats`` helper moved to
+``lmsaiv_rad01.Rad01.dark_stats`` in upstream commit 9b6143a.  The helpers operate on
 ``lms_mosaic.Mosaic`` objects (four detector HDUs plus a primary header),
 except ``copy_mosaic`` which is a legacy tuple-based routine.
 
 **Input data**: ``Mosaic`` objects read by ``lms_filer.Filer.read_mosaic``.
-``dark_stats`` reads the primary header keywords 'HIERARCH ESO DET DIT' and
-'HIERARCH ESO DET NDIT' and, per detector HDU, 'HIERARCH ESO DET3 CHIP
-GAIN' (electrons per ADU).  Nothing is read from disk directly.
+Nothing is read from disk directly.
 
 **Output**:
 
 - ``median_subtract`` returns the input list with every mosaic
   background-subtracted in place.
-- ``dark_stats`` prints a per-detector table (median, standard deviation,
-  dark current in el/s, read noise in electrons) and returns None.
 - ``transform_detector_image`` returns the (modified) input mosaic.
 - ``_find_thetas`` adds 'theta' and 'theta_err' keys to each trace
   dictionary and returns the list.
@@ -29,15 +26,6 @@ Notes
 - Bug: ``transform_detector_image`` accepts an ``xy_pix`` offset but never
   uses it; only the rotation is applied (about the array origin, not the
   detector centre).
-- Open question: ``dark_stats`` divides the standard deviation by
-  sqrt(2 / ndit), which is the read-noise estimator for the difference
-  of two frames; it is applied to single dark frames here.
-- Open question: the ToySim writer (``lmssim_toy``) does not set
-  'HIERARCH ESO DET DIT' / 'NDIT'; the values appear to come unchanged
-  from the '../config/sim_template.fits' header rather than from the
-  simulated ``lms_dit``.
-- Clean-up: the gain keyword name 'HIERARCH ESO DET3 CHIP GAIN' is
-  hard-coded for all four detectors.
 """
 import math
 import numpy as np

@@ -3,42 +3,40 @@
 LMS-OPT-03 analysis stub: monochromatic point / line spread function (lmsaiv program).
 
 Registered as 'lms_opt_03_psf' -> ``Opt03.psf`` in
-``lmsaiv_opt_tests.OptTests`` with the title 'Monochomatic Point and line
-spread function'.  As committed the module is non-functional: it is a
-partial copy of an early version of the LMS-OPT-01 flood analysis (dark
-statistics, legacy ``flood_stats`` slice map, approximate relative
-response) written for the pre-``Mosaic`` tuple layout, and no PSF or LSF
-measurement is implemented.
+``lmsaiv_opt_tests.OptTests`` with the title 'Monochromatic Point and line
+spread function'.  ``psf`` prints '!! Analysis not yet available !!' and
+returns the 'as built' dictionary unchanged.  The unreachable code after
+that ``return`` is a partial copy of an early version of the LMS-OPT-01
+flood analysis (dark statistics, legacy ``flood_stats`` slice map,
+approximate relative response) written for the pre-``Mosaic`` tuple
+layout; no PSF or LSF measurement is implemented.
 
-**Input data (as written)**: FITS mosaics tagged [test_name, 'nom_dark']
+**Input data (draft code)**: FITS mosaics tagged [test_name, 'nom_dark']
 and [test_name, 'flood'] in ``Filer.test_data_folder``; header keywords
 'HIERARCH ESO INS WLEN CEN', 'X_CEN', 'X_SIZE', 'Y_SIZE',
 'HIERARCH pixel_size'.
 
-**Output**: intended ``as_built['slice_map']`` and a relative response
-plot.  In practice the method raises before producing anything.
+**Output**: none (``as_built`` returned unchanged).
 
 Notes
 -----
-- Inconsistency: ``psf(test_name, title, as_built, **kwargs)`` does not
-  match the ``method(title, as_built, **kwargs)`` call in
-  ``OptTests.run`` (TypeError: missing 'as_built').
-- Bug: ``Filer.read_mosaic_list(inc_tags)`` passes one positional
-  argument where ``(folder, inc_tags)`` is required (IndexError on
-  ``args[0]`` inside ``read_mosaic_list``), and
-  ``Filer.read_mosaic_list(inc_tags=[...])`` uses a keyword the function
-  does not accept (TypeError).
-- Bug: ``OptTools.flood_stats`` does not exist (the legacy routine is
+- Inconsistency: ``psf(test_name, as_built, **kwargs)`` is called by
+  ``lmsaiv.main`` as ``method(title, as_built)``, so the registry title
+  arrives as ``test_name``.
+- Bug: (draft code) ``Filer.read_mosaic_list(inc_tags=[...])`` uses a
+  keyword the function does not accept (TypeError); ``title`` is undefined;
+  ``OptTools.dark_stats`` was removed (now ``Rad01.dark_stats``) and
+  ``OptTools.flood_stats`` never existed (the legacy routine is
   ``lmsaiv_opt01.Opt01.flood_stats``).
-- Bug: ``u`` (astropy.units) and ``Model`` (lmssim_model) are used but not
-  imported.
-- Bug: keywords 'X_SIZE', 'Y_SIZE' and 'HIERARCH pixel_size' are not
-  written by ``lmssim_toy`` (which writes 'X_CEN', 'Y_CEN' and
+- Bug: (draft code) ``u`` (astropy.units) and ``Model`` (lmssim_model) are
+  used but not imported.
+- Bug: (draft code) keywords 'X_SIZE', 'Y_SIZE' and 'HIERARCH pixel_size'
+  are not written by ``lmssim_toy`` (which writes 'X_CEN', 'Y_CEN' and
   'HIERARCH AIT PIXEL_PITCH').
-- Inconsistency: file tag 'flood' does not match the 'flat_bb' naming of
-  ``lms_obs_map``; tuple unpacking of mosaics is incompatible with
-  ``lms_mosaic.Mosaic``; ``as_built['slice_map']`` differs from the
-  ``slice_map_...`` keys used by LMS-OPT-01 / LMS-OPT-02.
+- Inconsistency: (draft code) file tag 'flood' does not match the
+  'flat_bb' naming of ``lms_obs_map``; tuple unpacking of mosaics is
+  incompatible with ``lms_mosaic.Mosaic``; ``as_built['slice_map']``
+  differs from the ``slice_map_...`` names used by LMS-OPT-01 / LMS-OPT-02.
 - Open question: LMS-OPT-03 needs laser + single-pinhole frames
   (``lms_obs_map`` tag ``las_psf_``) and a PSF / LSF centroid-and-width
   measurement; none of that exists yet.
@@ -91,7 +89,7 @@ class Opt03:
         - Inconsistency: the signature has no ``title`` parameter, but the
           caller uses ``method(title, as_built)``, so the title arrives as
           ``test_name``.
-        - Bug (unreachable draft): ``title`` is undefined,
+        - Bug: (unreachable draft) ``title`` is undefined,
           ``OptTools.dark_stats`` no longer exists (moved to
           ``Rad01.dark_stats``), and ``Filer.read_mosaic_list(inc_tags=...)``
           uses a keyword the function does not accept.
