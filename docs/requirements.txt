@@ -1,0 +1,10 @@
+# Documentation build requirements (Read the Docs installs these)
+sphinx>=7
+sphinx-rtd-theme>=2
+myst-parser>=2
+# Runtime imports needed by autodoc (ScopeSim and synphot are mocked in conf.py)
+numpy
+scipy
+astropy
+matplotlib
+photutils

@@ -1,10 +1,75 @@
 #!/usr/bin/env python
 """
-Decorators for use in all LMS projects.  Currently just includes @debug
+LMS-OPT-02 analysis: iso-alpha / iso-lambda traces and distortion coordinates (lmsaiv program).
+
+Implements AIT performance test LMS-OPT-02 for the ``lmsaiv`` program
+(entry ``Opt02.dist``, registered as 'lms_opt_02_dist' in
+``lmsaiv_opt_tests.OptTests``).  Pinhole + black-body frames give
+iso-alpha traces (constant along-slice field position, roughly along
+detector rows) and tunable-laser flood frames give iso-lambda traces
+(constant wavelength, roughly along columns).  Their intersections are
+fiducial points ``(det_no, row, col) <-> (efp_x, efp_y, efp_w)`` which
+are written to a CSV for the ``lmsdist`` SVD distortion fit, and the
+iso-lambda traces also yield the inter-detector gap and relative rotation
+of detector pairs 1/2 and 3/4.
+
+**Input data**: FITS mosaics in ``Filer.test_data_folder`` whose names
+contain ['lms_opt_02', 'nom'] plus:
+
+- ['flat', ``step1_``] (nominal) or ``step38_`` (extended): black-body flat
+  used as the iso-alpha background;
+- 'iso_alpha': pinhole + black-body frames;
+- 'iso_lambda': tunable-laser flood frames (background = per-pixel
+  median of the series, ``OptTools.median_subtract``).
+
+Also required: ``as_built['slice_map_nominal']`` from the pickle at
+``Globals.as_built_file``, and Zemax / AIT SVD transform FITS files read
+through ``Filer.read_svd_transforms`` from the folders selected by
+``Filer.set_configuration('distortion', opticon, is_ait_data)``.
+
+Primary header keywords read: 'HIERARCH ACHG CFO CHOP X', 'HIERARCH ACHG
+CFO CHOP Y' (pinhole offset; appears to be entrance focal plane mm),
+'HIERARCH ACHG REF_ECH_ORD', 'HIERARCH ACHG LASER WAVE' (micron),
+'HIERARCH AIT OPTICON', 'HIERARCH AIT PRI_ANG', 'HIERARCH AIT ECH_ANG'
+(degrees).  Per HDU: 'ID' (detector number, as a string).  All of these
+are written only by ``lmssim_toy``; ScopeSim output and real ICS headers
+do not carry them.
+
+**Output**:
+
+- ``as_built['alpha_traces']``, ``as_built['lambda_traces']`` (lists of
+  trace dicts, see ``_extract_det_traces``), ``as_built['affines']``,
+  ``as_built['dist_coord']`` (see ``_find_trace_intersections``);
+  pickled to ``Globals.as_built_file``.
+- CSV 'LMS_ait_dist_coord.csv' in ``filer.ray_trace_folder``
+  ('../data/distortion_ait/nominal/<data_set>/').
+- Printed tables and blocking figures (``Plot.mosaic``,
+  ``Plot.gap_data``, ``Plot.det_traces``).
+
+Notes
+-----
+- Bug: ``dist`` requires ``as_built['slice_map_nominal']`` but
+  ``lmsaiv_opt01`` stores 'slice_map_nomstepN' keys, so the chain from
+  LMS-OPT-01 is broken.
+- Bug: ``lmsdist.run()`` (the ``calculate_transforms`` step) has
+  ``is_ait_data = False`` hard-coded, so it refits the Zemax ray traces
+  rather than the AIT CSV written here; the AIT transforms compared
+  against Zemax are therefore never produced by this chain.
+- Bug: the ``test_transforms`` block calls ``Util.slice_to_efp_y(slice_no,
+  beta_phase, opticon)`` with three arguments while the function takes
+  two, and discards the forward-projected points.
+- Inconsistency: ``_extract_det_traces`` indexes the slice map with
+  ``Globals.mos_idx[det_no]`` while ``Filer.read_mosaic`` stores ToySim
+  HDUs at ``det_no - 1``; for ToySim data detectors 1 and 2 appear to be
+  paired with each other's slice map.
+- Open question: the analysis is controlled by hard-coded booleans in
+  ``dist`` (``misalign_detector``, ``find_iso_alphas``,
+  ``find_iso_lambdas``, ``calculate_transforms``, ``test_transforms``)
+  rather than keyword arguments.
+- Clean-up: stray ``print(0)`` and ``print(rows, gaps)`` debug output;
+  ``_print_dist_coord`` writes its CSV by redirecting ``sys.stdout``.
 
 @author: Alistair Glasse
-
-Update:
 """
 import math
 import sys
@@ -23,13 +88,102 @@ from lms_transform import Transform
 
 
 class Opt02:
+    """LMS-OPT-02 distortion analysis (static methods).
+
+    Entry point ``dist``; helpers extract traces, fit them, find the
+    inter-detector gaps and intersect the trace families.
+    """
 
 
     def __init__(self):
+        """Do nothing; all methods are static."""
         return
 
     @staticmethod
     def dist(title, as_built, **kwargs):
+        """Run the LMS-OPT-02 trace / distortion analysis.
+
+        Steps, gated by hard-coded booleans (defaults in parentheses):
+
+        1. ``filer.set_configuration('distortion', nominal, is_ait_data=True)``
+           and read the slice map ``as_built['slice_map_nominal']``.
+        2. ``misalign_detector`` (False): rotate detector 2 with
+           ``OptTools.transform_detector_image`` to test the recovery of a
+           misalignment (offset (0, 0) and angle 0.0, i.e. a no-op).
+        3. ``find_iso_alphas`` (False): subtract the ['flat', ``step1_``] flat from
+           each 'iso_alpha' pinhole frame, extract traces with ``snr_cut=1.``,
+           reduce them to one PSF trace per detector with ``_find_beta_phase``,
+           add 'mean_theta_disp' (mean tilt over 16 column samples, degrees) and
+           store ``as_built['alpha_traces']``.
+        4. ``find_iso_lambdas`` (True): median-subtract the 'iso_lambda' series,
+           read 'HIERARCH ACHG LASER WAVE' per frame and extract traces with
+           ``snr_cut=10``; store ``as_built['lambda_traces']``.
+        5. ``_find_detector_gaps`` on the lambda traces; design affines from
+           ``Transform.create_affines`` (all offsets zero); ``Plot.det_traces``
+           per LMS configuration; ``_find_trace_intersections``;
+           ``_print_dist_coord`` to stdout and to CSV; store
+           ``as_built['affines']`` and ``as_built['dist_coord']``.
+        6. For each configuration read Zemax (``is_ait_data=False``) and AIT
+           (``is_ait_data=True``) SVD transforms, match them with
+           ``Util.find_matching_transforms`` and print the fractional matrix
+           term differences (AIT - ZMX) / ZMX (debug 'low').
+        7. ``calculate_transforms`` (True): ``lmsdist.run()``.
+        8. ``test_transforms`` (True): forward-project the centre of each matched
+           slice with ``Util.efp_to_mfp`` through both transforms.
+
+        Parameters
+        ----------
+        title : str
+            Registry title; unused.
+        as_built : dict
+            'As built' dictionary; must contain 'slice_map_nominal' and, when
+            ``find_iso_alphas`` is False, 'alpha_traces' from a previous run.
+        **kwargs
+            ``overwrite_as_built_traces`` : bool, default True.  Intended to
+            append to rather than replace the archived trace lists.
+
+        Returns
+        -------
+        dict
+            ``as_built`` updated with 'alpha_traces', 'lambda_traces', 'affines'
+            and 'dist_coord'.  Intermediate pickles are also written after steps
+            3 and 4.
+
+        Raises
+        ------
+        KeyError
+            If 'slice_map_nominal' (or 'alpha_traces' / 'lambda_traces' when the
+            corresponding extraction is disabled) is missing from ``as_built``.
+
+        Notes
+        -----
+        - Bug: with ``overwrite_as_built_traces=False`` the archived list is
+          extended in place but then overwritten by the new list, so the option
+          has no effect.
+        - Bug: ``matching_transforms`` is only defined inside the loop over
+          ``dist_coord``; if no intersections were found the ``test_transforms``
+          block raises NameError.
+        - Bug: ``Util.slice_to_efp_y`` is called with three arguments (it takes
+          ``fslice_no, phase``) and with the encoded slice number, and the
+          round-trip results ``mfp_pts_ait`` / ``mfp_pts_zmx`` are never compared
+          or returned.
+        - Bug: the AIT transforms are read (step 6) before ``lmsdist.run()``
+          (step 7) is called, and ``lmsdist.run`` fits Zemax data anyway
+          (``is_ait_data = False`` hard-coded), so no AIT transform FITS files
+          are produced by this chain.
+        - Inconsistency: ``sig_mosaic.subtract(bgd_mosaic)`` modifies
+          ``sig_mosaic`` in place, so the 'Signal' plot that follows already
+          shows the background-subtracted image.
+        - Inconsistency: ``Plot.mosaic`` is called with a ``bounds`` keyword it
+          does not use.
+        - Open question: the ``misalign_detector`` test uses offset (0, 0) and
+          rotation 0.0, so even when enabled it does not perturb the data.
+        - Open question: extended mode is not reachable (``opticon =
+          Globals.nominal`` hard-coded) although the flat step for it (``step38_``)
+          is defined.
+        - Clean-up: ``slice_row_dict`` is computed but unused; ``Plot.det_traces``
+          is called twice per configuration; stray ``print(0)``.
+        """
         overwrite_as_built_traces = kwargs.get('overwrite_as_built_traces', True)
 
         test_name = 'lms_opt_02'
@@ -309,6 +463,25 @@ class Opt02:
 
     @staticmethod
     def _build_slice_row_dict(slice_map):
+        """Tabulate the row extent of every slice on every detector of a slice map.
+
+        Parameters
+        ----------
+        slice_map : Mosaic
+            Slice map from ``lmsaiv_opt01.Opt01._make_slice_map``; per-HDU 'ID'
+            gives the detector number.
+
+        Returns
+        -------
+        dict
+            ``{det_no: {slice_no: {'row_min': int, 'row_max': int}}}`` over the
+            non-zero slice numbers of each detector image.
+
+        Notes
+        -----
+        - Clean-up: computed in ``dist`` but never used; ``_extract_det_traces``
+          recomputes the same bounds from the slice map directly.
+        """
         # _, _, hdus = slice_map
         slice_row_dict = {}
         for hdu in slice_map.hdu_list:
@@ -327,11 +500,48 @@ class Opt02:
 
     @staticmethod
     def _find_beta_phase(all_alpha_traces, opticon, snr_cut=1.):
-        """ Find the beta phase, the offset in slices of a PSF from the slice centre, from a list of alpha traces for
-        a sliced PSF image.  For the extended mode only 3 spatial slices (11, 12, 13) are available, with up to 3
-        images per detector.
-        :param all_alpha_traces:
-        :return:
+        """Reduce per-slice iso-alpha traces of a pinhole image to one PSF trace per detector and pupil slice.
+
+        For each detector (1..4) and each pupil slice number in
+        ``Globals.pslice_no_range[opticon]`` the traces with that pupil slice
+        (decoded with ``Util.decode_slice_no``) are collected.  If at least one
+        has ``snr > snr_cut`` a Gaussian ``Globals.gauss`` is fitted to trace
+        signal versus encoded slice number (initial guess: peak signal, peak
+        slice, sigma 2.5 slices).  The brightest trace is copied and given::
+
+            beta_phase = gopt[1] - slice_no_peak + 0.5
+
+        i.e. 0.5 when the PSF is centred on the brightest slice.
+
+        Parameters
+        ----------
+        all_alpha_traces : list of dict
+            Traces from ``_extract_det_traces(..., 'iso-alpha', ...)``, typically
+            extracted with a low ``snr_cut`` so that the wings of the PSF in
+            neighbouring slices are included.
+        opticon : str
+            ``Globals.nominal`` or ``Globals.extended``.
+        snr_cut : float, optional
+            A group is analysed only if one of its traces exceeds this SNR.
+            Default 1.
+
+        Returns
+        -------
+        list of dict
+            One trace per detector and pupil slice, a shallow copy of the
+            brightest trace with an added 'beta_phase' key.  Groups whose fit
+            raises RuntimeError / TypeError / ValueError are reported and skipped.
+
+        Notes
+        -----
+        - Open question: in extended mode only three field slices per pupil
+          slice are available, so the three-parameter Gaussian fit is exactly
+          determined.
+        - Open question: the fit is in encoded slice-number units
+          (``100 * pslice + fslice``); within one pupil slice this is a plain
+          slice index, so the phase is in slice widths.
+        - Clean-up: ``dict.copy()`` is shallow; 'popt' / 'pcov' arrays are shared
+          with the source trace.
         """
         alpha_trace_list = []
 
@@ -378,9 +588,59 @@ class Opt02:
 
     @staticmethod
     def _find_detector_gaps(lambda_traces, order=2):
-        """ Calculate the gap width in pixels between detectors separated in the dispersion direction.  It does this
-        by fitting traces for the same slice in both short and long wave detectors, so the data must include
-        sufficient laser lines (>= 2 for a linear fit) on both detectors.
+        """Measure the column gap and relative rotation between the detectors of each pair (1/2 and 3/4).
+
+        Iso-lambda traces are grouped by slice number; those on detectors 1 and 3
+        form the 'left' (short-wavelength) set, those on 2 and 4 the 'right' set.
+        For each slice with more than ``order`` lines on both sides::
+
+            lam(col_l)  linear fit -> lam_mid_l = lam(2048)   (RH edge of left det)
+            col(lam_r)  linear fit -> col_gap   = -col_r(lam_mid_l)
+
+        so ``col_gap`` is the number of columns between the last column of the
+        left detector and the first column of the right one.  Then, for each
+        detector pair, ``col_gap`` versus trace row (``u_mean``) is fitted
+        linearly and the slope converted to an angle::
+
+            theta     = atan(gradient) degrees
+            theta_err = sqrt(pcov[1][1]) * (180 / pi) / (1 + gradient ** 2)
+
+        Parameters
+        ----------
+        lambda_traces : list of dict
+            Iso-lambda traces with keys 'slice_no', 'det_no', 'v_fid' (column at
+            the trace mid-row), 'efp_w' (laser wavelength), 'u_mean' (mid-row).
+        order : int, optional
+            Number of polynomial coefficients used in the ``curve_fit`` initial
+            guess ``[0.] * order``; 2 (default) gives a linear fit.  A slice needs
+            more than ``order`` lines on each side.
+
+        Returns
+        -------
+        gap_data : dict
+            ``{slice_no: {'lams_l', 'lams_r', 'cols_l', 'cols_r', 'col_gap',
+            'u_mean', 'det_no'}}``; 'col_gap' is None where the fit was not
+            possible.  Consumed by ``Plot.gap_data``.
+        det_thetas : dict
+            ``{'12': (theta, theta_err) or None, '34': ...}`` in degrees.
+
+        Notes
+        -----
+        - Inconsistency: the parameter is named ``order`` but sets the number of
+          coefficients (degree + 1).
+        - Bug: the bare ``except`` clauses print 'Failed curve_fit' and then use
+          the undefined ``lam_popt_l`` / ``col_popt_r``, raising TypeError /
+          NameError anyway.
+        - Bug: ``except OptimizeWarning`` cannot catch a warning that
+          ``curve_fit`` only emits (not raises) unless warnings are turned into
+          errors; a failed fit leaves ``popt`` undefined.
+        - Bug (minor): the slope is evaluated with ``Globals.polynomial(mean_gap,
+          *popt, gradient=True)``, i.e. at x = mean gap instead of a row value;
+          harmless for a linear fit, wrong for higher orders.
+        - Open question: 'u_mean' and 'det_no' per slice are overwritten by the
+          last trace seen, so the row used for the rotation fit belongs to
+          whichever detector's trace came last.
+        - Clean-up: stray ``print(rows, gaps)``.
         """
         gap_data = {}
         for lambda_trace in lambda_traces:
@@ -460,12 +720,76 @@ class Opt02:
     @staticmethod
     def _extract_det_traces(mosaic, trace_type, slice_map, snr_cut,
                             lt_wave=None, sigma_clip=2.):
-        """ Extract iso-alpha or iso-lambda traces from a spectral image.
-        :param mosaic: Data tuple (name, _, image list)  Background subtracted trace mosaic
-        :param trace_type: 'iso-alpha' or 'iso-lambda'
-        :param slice_map:
-        :param kwargs:
-        :return:
+        """Extract one trace per illuminated slice from a background-subtracted mosaic.
+
+        For each detector HDU the slice map
+        (``slice_map.hdu_list[Globals.mos_idx[det_no]]``) gives the slices
+        present.  Each slice strip (rows ``[row_min - 10, row_max + 10)``, with
+        10 = ``Globals.intra_slice_gap / 2``) is collapsed along the 'u'
+        direction (columns for 'iso-alpha', rows for 'iso-lambda'); the brightest
+        'v' position gives::
+
+            noise  = median over v of std along u
+            bgd    = median of the strip
+            signal = mean of the collapsed profile within +-5 of the peak
+            snr    = (signal - bgd) / noise
+
+        Slices with ``snr < snr_cut`` are skipped.  Otherwise
+        ``_get_trace_coordinates`` samples the trace centroid at 10 (alpha) or 5
+        (lambda) positions and a 4-coefficient polynomial
+        ``Globals.polynomial`` v(u) is fitted with iterative ``sigma_clip``
+        (default 2 sigma) rejection, one point at a time, until no point is
+        rejected or fewer than four remain.  ``OptTools._find_thetas`` then adds
+        the local tilt.
+
+        Parameters
+        ----------
+        mosaic : Mosaic
+            Background-subtracted frame.  Primary keywords read: 'HIERARCH ACHG
+            CFO CHOP X' / 'Y' (-> 'efp_x', 'efp_y'), 'HIERARCH ACHG REF_ECH_ORD',
+            'HIERARCH AIT OPTICON', 'HIERARCH AIT PRI_ANG', 'HIERARCH AIT
+            ECH_ANG'; per HDU 'ID' (string, ``.strip()`` is applied).
+        trace_type : str
+            'iso-alpha' or 'iso-lambda'.
+        slice_map : Mosaic
+            Slice map from LMS-OPT-01.
+        snr_cut : float
+            Minimum SNR for a slice to be analysed.
+        lt_wave : float or None, optional
+            Laser wavelength (micron) stored as 'efp_w' for iso-lambda traces;
+            iso-alpha traces get 'efp_w' = -1.
+        sigma_clip : float, optional
+            Clipping threshold in units of the rms residual.  Default 2.
+
+        Returns
+        -------
+        list of dict
+            One dict per accepted slice with keys 'lms_config_id'
+            (``Globals.make_lms_config_id``: '_nom' or '_ext' + '_pa' + 5-digit
+            prism angle + '_ea' + sign + 5-digit echelle angle), 'version'
+            ('ait'), 'type', 'det_no', 'slice_no', 'snr', 'signal', 'popt',
+            'pcov', 'pt_u_coords', 'pt_v_coords', 'u_mean', 'v_fid' (fitted v at
+            ``u_mean``), 'efp_x', 'efp_y', 'efp_w', 'ref_ech_ord', 'opticon',
+            'pri_ang', 'ech_ang', 'fits_name', 'theta', 'theta_err'.
+
+        Notes
+        -----
+        - Inconsistency: ``Globals.mos_idx`` (= {2: 0, 1: 1, 3: 2, 4: 3}) is the
+          ScopeSim HDU order; ``Filer.read_mosaic`` stores ToySim HDUs at
+          ``det_no - 1``, so for ToySim data the slice map of detector 2 is used
+          for detector 1 and vice versa (appears to work only because both carry
+          the same slices at similar rows).
+        - Inconsistency: ``int(hdu.header['ID'].strip())`` requires a string
+          keyword; an integer 'ID' raises AttributeError.
+        - Open question: only the brightest trace per slice is found, so the
+          input must be a single-pinhole (or single-line) image.
+        - Open question: the intercept guess ``p0_guess[0] = u_mean`` is the mean
+          along-trace coordinate rather than a v value.
+        - Open question: when clipping reduces the sample below four points the
+          last successful ``popt`` is kept without further checks.
+        - The 'Gaussian fit failed' message can never print because
+          ``_get_trace_coordinates`` always returns ``is_error = False``.
+        - Clean-up: the previous docstring described the mosaic as a tuple.
         """
         name, prim_hdr, hdul = mosaic.name, mosaic.primary_hdr, mosaic.hdu_list
 
@@ -600,6 +924,26 @@ class Opt02:
 
     @staticmethod
     def _print_det_traces(det_traces, type):
+        """Print a table of trace positions and tilt angles.
+
+        Parameters
+        ----------
+        det_traces : list of dict
+            Traces with 'det_no', 'slice_no', 'u_mean', 'v_fid', 'theta'.
+        type : str
+            'iso-alpha' or 'iso-lambda'; selects the column labels.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Bug (labels only): ``'row' if type == 'iso-lambda' else 'col' +
+          '_mean'`` binds as ``'row' if ... else ('col' + '_mean')``, so the
+          '_mean' / '_fiducial' suffixes are only appended in the else branch.
+        - Clean-up: ``type`` shadows the builtin.
+        """
         print('Trace type = ', type)
         fmt = "{:>10s},{:>10s},{:>12s},{:>12s},{:>20s}"
         u_tag = 'row' if type == 'iso-lambda' else 'col' + '_mean'
@@ -617,12 +961,47 @@ class Opt02:
 
     @staticmethod
     def _get_trace_coordinates(slice_image, rs_min, v_max, is_alpha):
-        """ Now sample the trace at multiple u locations, find the centroid v_cen at each location and fit a
-        polynomial to all v_cen.
-        :param  slice_image ~130 row x 2048 section of the image matching a specific slice.
-        :param  rs_min ~ Absolute row number of bottom left corner of slice_image in main image.
-        :param  v_max ~ Row offset of brightest row with slice image.
-        :param  is_alpha ~ True if the trace is iso-alpha, False otherwise.
+        """Sample the centroid of a trace at several positions along it by Gaussian fitting.
+
+        The slice strip is sampled at ``n_samples`` (10 for iso-alpha, 5 for
+        iso-lambda) positions ``u`` spaced ``u_count // (n_samples + 1)`` apart.
+        At each, the window ``u +- 5`` (along) by ``v_max +- 10`` (across) is
+        averaged along u and ``Globals.gauss`` is fitted to the across-trace
+        profile (initial guess: peak value, centre ``v1 + 10``, sigma 1 pixel).
+        Coordinates are returned in the full detector image frame: for iso-alpha
+        traces u is the column and v the row (``rs_min`` added); for iso-lambda
+        traces u is the row (``rs_min`` added) and v the column.
+
+        Parameters
+        ----------
+        slice_image : numpy.ndarray
+            Strip of about 130 rows x 2048 columns covering one slice.
+        rs_min : int
+            Row of the strip's first row in the detector image.
+        v_max : int
+            Across-trace index (row for alpha, column for lambda) of the
+            brightest position within the strip.
+        is_alpha : bool
+            True for iso-alpha traces.
+
+        Returns
+        -------
+        pt_u_coords : list of float
+            Along-trace coordinates of the successful samples.
+        pt_v_coords : list of float
+            Fitted centroid at each sample.
+        is_error : bool
+            Always False (see notes).
+
+        Notes
+        -----
+        - Bug: fit failures are swallowed by a bare ``except: a = 1``; the
+          sample is silently dropped and ``is_error`` is never set to True.
+        - Open question: the centre guess is ``v1 + v_hw`` (the window centre)
+          rather than ``v_vals[idx_max]``; near the strip edges, where the window
+          is clipped, the guess is off-centre.
+        - Clean-up: returns lists that the caller immediately converts with
+          ``np.delete`` / ``np.mean``.
         """
         (u_off, u_axis, v_axis) = (0, 1, 0) if is_alpha else (rs_min, 0, 1)
         u_count = slice_image.shape[u_axis]
@@ -662,8 +1041,49 @@ class Opt02:
 
     @staticmethod
     def _find_trace_intersections(alpha_traces, lambda_traces, affines):
-        """ Find the ray coordinates at the input focal plane (alpha, beta, lambda) and detector focal plane
-        (det_no/mos_idx, column, row)
+        """Intersect iso-alpha and iso-lambda traces to obtain distortion fiducial points.
+
+        For each detector, every iso-alpha trace is paired with every iso-lambda
+        trace on the same detector with the same 'slice_no' and the same
+        'lms_config_id'.  The intersection of ``row = a(col)`` (alpha fit) and
+        ``col = l(row)`` (lambda fit) is found by fixed-point iteration from
+        (1024, 1024) until both updates change by less than 0.01 pixel.  Each
+        point carries the entrance focal plane coordinates ``efp_x, efp_y`` from
+        the alpha trace (pinhole chop offsets) and ``efp_w`` from the lambda
+        trace (laser wavelength), and is projected into the mosaic focal plane
+        with ``Util.dfp_to_mfp(affines, ...)``.
+
+        Parameters
+        ----------
+        alpha_traces : list of dict
+            Iso-alpha traces (one per detector per pinhole frame, from
+            ``_find_beta_phase``).
+        lambda_traces : list of dict
+            Iso-lambda traces.
+        affines : object
+            Per-detector affine matrices returned by ``Transform.create_affines``.
+
+        Returns
+        -------
+        dict
+            ``{lms_config_id: points}`` with ``points`` = {'lms_config' (opticon,
+            pri_ang, ech_ang), 'ref_ech_ord', 'det_no', 'slice_no', 'row', 'col',
+            'efp_x', 'efp_y', 'efp_w' (lists), 'mfp_x', 'mfp_y' (arrays)}.
+            Stored as ``as_built['dist_coord']`` and written by
+            ``_print_dist_coord``.
+
+        Notes
+        -----
+        - Open question: the fixed-point iteration has no iteration cap; if the
+          two polynomials do not attract it does not terminate.
+        - Bug: ``Util.dfp_to_mfp`` documents that all points are assumed to lie
+          on the detector of the first point, but ``points`` accumulates points
+          from all four detectors of a configuration (outer loop over
+          ``det_no``), so the mosaic coordinates of points on later detectors
+          appear to use the wrong affine.
+        - Clean-up: ``mfp_x`` / ``mfp_y`` are recomputed for all points after
+          every new point (quadratic cost); the ``np.array(det_no) != det_no``
+          comparisons are needless.
         """
         # Select traces for each slice
         util = Util()
@@ -727,6 +1147,43 @@ class Opt02:
 
     @staticmethod
     def _print_dist_coord(filer, dist_coord, to_csv=False):
+        """Print the distortion fiducial points, optionally into 'LMS_ait_dist_coord.csv'.
+
+        For each LMS configuration a header block is printed ('Spectral order:'
+        for nominal mode, 'Echelle angle:', 'Prism angle:'), then a column
+        header and one line per point::
+
+            slice_no, efp_w, efp_x, efp_y, mfp_x, mfp_y
+
+        With ``to_csv=True`` the same text is written to
+        ``filer.ray_trace_folder + '/LMS_ait_dist_coord.csv'`` by temporarily
+        redirecting ``sys.stdout``.
+
+        Parameters
+        ----------
+        filer : Filer
+            Configured with ``set_configuration('distortion', opticon,
+            is_ait_data=True)`` so that ``ray_trace_folder`` points at the AIT
+            data folder ('../data/distortion_ait/nominal/<data_set>/').
+        dist_coord : dict
+            From ``_find_trace_intersections``.
+        to_csv : bool, optional
+            Write to file instead of stdout.  Default False.
+
+        Returns
+        -------
+        str or None
+            Path of the CSV file, or None when printing to stdout.
+
+        Notes
+        -----
+        - Clean-up: redirecting ``sys.stdout`` leaves it redirected if an
+          exception occurs; write to the file object instead.
+        - Open question: 'det_no', 'row' and 'col' are not written, and all
+          configurations are concatenated in one file; whether the ``lmsdist``
+          CSV reader (written for the Zemax ray-trace layout) can consume this
+          file is not verified here.
+        """
         path = None
         if to_csv:
             filename = 'LMS_ait_dist_coord.csv'

@@ -1,3 +1,58 @@
+"""
+Cube assembly and image-quality series analysis for the ``lmsiq`` program.
+
+Purpose
+-------
+:class:`Cuber` is the workhorse of ``lmsiq``.  :meth:`Cuber.build` walks every
+(inter-pixel setting, field, spectral-IFU slice, configuration, focus) combination
+in an :class:`lmsiq_image_manager.ImageManager` dictionary, loads the per-slice stack
+of Zemax PSF images (perfect, as-designed, Monte-Carlo instances), applies the detector
+diffusion / IPC model and down-samples to detector pixels, measures the spectral LSF on
+the target slice, stacks the slices into a pseudo (model, along-slice, across-slice)
+cube, measures enslitted energy, along/across-slice LSF and a relative Strehl on the
+cube, and writes the cube (FITS) plus a ``field_series`` metric dictionary (pickle).
+:meth:`Cuber.plot` reloads the pickles and plots each metric against wavelength (or
+spectral-IFU slice) per field with Monte-Carlo percentile bands and the MET-2745 /
+MET-3739 requirement lines.
+
+Input data
+----------
+Zemax PSF FITS images under ``../data/iq/<opticon>/<date_stamp>/<config folder>/``,
+named ``<folder>_spat<ss>_spec<p>_det<tag>.fits`` (``tag`` = ``perf``, ``desi`` or a
+4-digit MC number), 128 x 128 pixels at 4.5 um (4x oversampled 18 um H2RG pixels), with
+one ``.txt`` parameter file per folder (keys ``wavelength``, ``prism angle``, ``grating
+angle``, ``grating order``, ``Pixel size (micron)``).  The ``lmsdist`` trace pickle
+(``dist_filer.trace_file``) supplies the dispersion.
+
+Outputs
+-------
+Under ``../output/iq/<opticon>/<date_stamp>/``:
+
+* ``cube/fits/cube_<ipc>_field_<f>_spifu_<p>_cfg_<c>_focus_<d>_slices_<a>_to_<b>.fits``
+  (:meth:`lmsiq_fitsio.FitsIo.write_cube`, no header);
+* ``cube/pkl/<same stem>.pkl`` holding ``(cube_ident, cube, field_series)``;
+* ``profiles/ee/ee_<axis>_<cube>.png`` and ``profiles/lsf/lsf_<axis>_<cube>.png``;
+* ``cube/series/png/<opticon>_<metric>_v_<abscissa>_<ipc>.png`` and ``key.png`` from
+  :meth:`Cuber.plot`;
+* ``cube/series/csv/series.csv`` from :meth:`Cuber.write_csv` (not called at HEAD).
+
+Notes
+-----
+* Bug: :meth:`Cuber.build` calls ``dist_filer.set_configuration('distortion',
+  opticon)`` with two arguments; :meth:`lms_filer.Filer.set_configuration` requires
+  three, so the method raises ``TypeError`` at its first statement after setup.
+* Bug: :meth:`lmsiq_analyse.Analyse.extract_cube_strips` is called on down-sampled
+  (detector-pixel) images with ``oversampling = 4``, so each cube column sums 10
+  detector columns rather than the 2.5 pixel slice width the comment intends.
+* Bug: if the target slice of a field is not present in the data set,
+  ``field_series`` stays ``None`` and the per-axis assignments
+  ``field_series[axis_tag + ...]`` raise ``TypeError``.
+* Inconsistency: ``write_pickle = False`` is hard-coded twice so the LSF and EE
+  profile pickles are never written, although the PNGs are.
+* Clean-up: :class:`lms_wcal.Wcal` is instantiated in the constructor for no effect;
+  :class:`lmsiq_fitsio.FitsIo`, ``Util``, ``Plot`` are used, ``Globals`` only for debug
+  checks.
+"""
 import numpy as np
 import time
 
@@ -13,15 +68,122 @@ from lmsiq_analyse import Analyse
 
 
 class Cuber:
+    """
+    Static methods to build, filter, tabulate and plot lmsiq image-quality cubes.
+
+    Cube package layout (as pickled by :meth:`build` and read by :meth:`read_pkl_cubes`)::
+
+        cube_ident   = (cube_name, ipc_tag, field_no, spifu_no, config_no)
+        cube         = ndarray (n_models, 32, n_cube_cols)
+        field_series = dict with keys
+            'ipc_on', 'field_no', 'spifu_no', 'config_no', 'dw_dlmspix' (nm/pixel),
+            'lsf_gau_fwhms', 'lsf_lin_fwhms'   (spectral LSF of target slice, det. pix),
+            'acr_gau_fwhms', 'acr_lin_fwhms'   (across-slice LSF of cube, slices),
+            'alo_gau_fwhms', 'alo_lin_fwhms'   (along-slice LSF of cube, det. pix),
+            'strehls', plus every key of the data-set dictionary ds_dict
+            ('wavelength', 'prism_angle', 'grating_angle', 'grating_order',
+            'focus_shift', 'folder', 'file_names', 'mc_bounds', ...).
+
+    All per-model lists follow the convention index 0 = perfect, 1 = as-designed,
+    2.. = Monte-Carlo instances.
+    """
 
     def __init__(self):
+        """
+        Instantiate :class:`lms_wcal.Wcal` (no effect) and return.
+
+        Notes
+        -----
+        * Clean-up: ``Wcal()`` has a no-op constructor; the call can be removed.
+        """
         Wcal()
         return
 
     @staticmethod
     def build(data_identifier, process_control, image_manager, iq_filer, dist_filer, **kwargs):
-        """ Build fits cubes (alpha, beta, lambda, configuration, field_position) from the slice images,
-        optionally including detector diffusion.
+        """
+        Build pseudo-cubes and image-quality metrics for every data set in the model.
+
+        Flow:
+
+        1. ``dist_filer.set_configuration('distortion', opticon)`` (raises at HEAD, see
+           Notes) and load the ``lmsdist`` traces from ``dist_filer.trace_file``.
+        2. ``oversampling = int(Detector.det_pix_size / im_pix_size)`` = 4;
+           ``n_runs = 2 if mc_bounds is None else mc_bounds[1] - mc_bounds[0] + 3``
+           (perfect + design + MC instances); ``n_cube_rows = 128 / oversampling`` = 32.
+        3. Loop over ``inter_pixels`` (calls :meth:`lms_ipc.Ipc.set_inter_pixel`), then
+           field, spifu slice, configuration and focus shift.  For each field the slice
+           range is ``slice_tgt +- slice_radius`` with
+           ``slice_tgt = data_identifier['field_tgt_slice'][field_no]``; the cube has
+           ``n_cube_cols = 2 * slice_radius + 1 + 2 * 3`` columns (3 empty margin
+           columns each side).
+        4. For each slice, ``image_manager.load_dataset`` returns the model stack and
+           ``ds_dict``.  Each image is passed through :meth:`lms_ipc.Ipc.apply` (if
+           ``inter_pixel``) and :meth:`lms_detector.Detector.down_sample`.
+        5. Target slice only: :meth:`lmsiq_analyse.Analyse.lsf` on the IPC-processed
+           (still oversampled) images with ``axis=0, oversample=4, v_coadd=12.0``
+           gives the spectral LSF; :meth:`lmsiq_analyse.Analyse.get_dispersion`
+           gives ``dw_dx`` (um/mm) and ``dw_lmspix = dw_dx * 18`` (nm/pixel);
+           ``field_series`` is created with these and all ``ds_dict`` entries.
+        6. Every slice: :meth:`lmsiq_analyse.Analyse.extract_cube_strips` collapses
+           the down-sampled images to along-slice strips that fill cube column
+           ``slice_no - slice_start + 3``.
+        7. On the finished cube, for ``axis_name`` in ``('across-slice', 'along-slice')``:
+           :meth:`lmsiq_analyse.Analyse.eed` (``oversample=1``, log sampling) and
+           :meth:`lmsiq_analyse.Analyse.lsf` (``oversample=1, v_coadd=3.0``), each
+           plotted with :meth:`lmsiq_plot.Plot.plot_cube_profile`; FWHM lists stored
+           under ``'acr_'`` / ``'alo_'`` keys.  Then
+           :meth:`lmsiq_analyse.Analyse.find_strehls`.
+        8. Write the cube with :meth:`lmsiq_fitsio.FitsIo.write_cube` and pickle
+           ``(cube_ident, cube, field_series)`` to ``cube/pkl/<cube_name>.pkl``.
+
+        Parameters
+        ----------
+        data_identifier : dict
+            From ``lmsiq.main``: ``'optical_path'``, ``'field_tgt_slice'`` (field ->
+            target slice map), ``'slice_radius'`` and others.
+        process_control : tuple
+            ``(mc_bounds, inter_pixels)``; ``mc_bounds`` is None or ``(lo, hi)``,
+            ``inter_pixels`` a list of bools.
+        image_manager : lmsiq_image_manager.ImageManager
+            Must have had ``make_dictionary`` run; supplies ``model_dict`` and
+            ``unique_parameters``.
+        iq_filer : lms_filer.Filer
+            Configured for ``'iq'``; provides ``psf_folder``, ``output_folder``,
+            ``cube_folder``.
+        dist_filer : lms_filer.Filer
+            Filer for the ``'distortion'`` analysis (re-configured here).
+        **kwargs
+            ``plot_to_png`` : bool, default False -- write slicer-image PNGs in debug
+            mode.  ``debug`` is accepted by the caller but not read.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Bug: two-argument ``set_configuration`` call (see module Notes).
+        * Bug: ``extract_cube_strips`` receives down-sampled images but
+          ``oversampling = 4`` (module Notes).
+        * Bug: ``field_series`` is None if ``slice_tgt`` is not in the slice range
+          actually loaded (module Notes).
+        * Inconsistency: ``images is None`` triggers the message "exiting cuber.build"
+          but the code continues (``continue``) to the next slice.
+        * Inconsistency: the ``eed`` call passes ``normalise='to_average'`` which
+          ``Analyse.eed`` ignores.
+        * Inconsistency: the spectral LSF (step 5) is measured on IPC-processed but
+          *not* down-sampled images and rescaled by ``oversample=4``, whereas the
+          across/along-slice LSFs are measured on the down-sampled cube; the
+          along-slice FWHM therefore includes pixel-integration broadening the spectral
+          one does not.
+        * Inconsistency: ``cube_dict['wavelength']`` is taken from the last-loaded
+          ``ds_dict``, assumed identical across slices of one configuration.
+        * Clean-up: ``plot_images`` and both ``write_pickle`` flags are hard-coded
+          False; ``lsf_data`` for the target slice is overwritten by the cube LSFs
+          before the loop ends.
+        * Clean-up: the wall-clock progress line is printed with ``\\r`` and no final
+          newline.
         """
         plot_to_png = kwargs.get('plot_to_png', False)
         t_start = time.perf_counter()
@@ -245,7 +407,26 @@ class Cuber:
 
     @staticmethod
     def read_pkl_cubes(iq_filer):
-        """ Read pkl files in the pkl directory.
+        """
+        Load every cube package pickle from ``<cube_folder>/pkl/``.
+
+        Files whose name contains ``'slicer'`` are excluded.
+
+        Parameters
+        ----------
+        iq_filer : lms_filer.Filer
+            Configured ``'iq'`` Filer; ``cube_folder`` is used.
+
+        Returns
+        -------
+        cube_packages : list of tuple
+            ``(cube_ident, cube, field_series)`` per file, in directory listing order.
+
+        Notes
+        -----
+        * Open question: no filter on the IPC tag, so packages from ``ipc_on`` and
+          ``ipc_off`` runs would be mixed if both had been built; :meth:`plot` only
+          iterates over ``ipc_on``.
         """
         inc_tags, excl_tags = [], []
         cube_pkl_folder = iq_filer.get_folder(iq_filer.cube_folder + 'pkl')
@@ -261,6 +442,26 @@ class Cuber:
 
     @staticmethod
     def remove_configs(cube_packages, remove_config_list):
+        """
+        Drop cube packages whose ``field_series['config_no']`` is in a list.
+
+        Parameters
+        ----------
+        cube_packages : list of tuple
+            As returned by :meth:`read_pkl_cubes`.
+        remove_config_list : list of int
+            Configuration numbers to exclude (``[21]`` in ``lmsiq.main`` for the
+            nominal path).
+
+        Returns
+        -------
+        cube_packages_out : list of tuple
+
+        Notes
+        -----
+        * Open question: ``lmsiq.main`` removes nominal configuration 21 as a "weird
+          nominal configuration"; what is wrong with it is not recorded.
+        """
         cube_packages_out = []
         for cube_package in cube_packages:
             cube_ident, cube, field_series = cube_package
@@ -271,6 +472,38 @@ class Cuber:
 
     @staticmethod
     def write_csv(image_manager, cube_packages, iq_filer):
+        """
+        Write Monte-Carlo mean Strehl and LSF FWHM per (configuration, field) to a CSV.
+
+        For each of ``'strehls'``, ``'lsf_gau_fwhms'``, ``'lsf_lin_fwhms'`` a table is
+        built with one row per configuration (or spectral-IFU slice for ``'spifu'``),
+        columns ``prism_angle, grating_angle, grating_order, wavelength (or spifu_no),
+        field_1 .. field_n``, where the field value is ``mean(values[2:])`` (Monte-Carlo
+        models only).  Rows are sorted by the fourth column.  The text block is printed
+        and written to ``<output_folder>/cube/series/csv/series.csv``.
+
+        Parameters
+        ----------
+        image_manager : lmsiq_image_manager.ImageManager
+            Supplies ``model_dict['optical_path']`` and ``unique_parameters``.
+        cube_packages : list of tuple
+        iq_filer : lms_filer.Filer
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Inconsistency: ``is_spifu = optical_path == 'spifu'`` but the optical paths
+          are ``'nominal'`` / ``'extended'`` (``Globals``), so the spifu branch is never
+          taken.
+        * Inconsistency: ``values`` is sorted in place inside the metric loop and then
+          fully rewritten by row index on the next metric; this only works because
+          every ``(row, field)`` cell is re-assigned each pass -- a missing package
+          would leave a stale, mis-sorted value behind.
+        * Clean-up: not called anywhere at HEAD.
+        """
         model_dict = image_manager.model_dict
         optical_path = model_dict['optical_path']
         is_spifu = optical_path == 'spifu'
@@ -328,8 +561,48 @@ class Cuber:
 
     @staticmethod
     def plot(optical_path, cube_packages, iq_filer, **kwargs):
-        """ Plot all series data.  This method extracts and reformats the plot data from the
-        cube packages to make 1 plot per field point.
+        """
+        Plot each image-quality metric against wavelength (or spifu slice), one panel per field.
+
+        For every cube package the ``field_series`` metrics are appended to a per-field
+        ``plot_data`` entry: ``lsf_gau_fwhms``, ``acr_gau_fwhms``, ``alo_gau_fwhms``,
+        ``strehls`` (each an array over models) and the spectral resolving power
+        ``srps = 1000 * wavelength / (lsf_gau_fwhms * dw_dlmspix)`` (wavelength in um,
+        FWHM in detector pixels, dispersion in nm/pixel).  The abscissa is the
+        wavelength for the nominal path or ``spifu_no`` for the spectral IFU.  Each
+        metric is then drawn with :meth:`lmsiq_plot.Plot.series` using a 3 x 3 panel
+        grid (nominal), 3 x 1 (spifu) or 1 x 3 (defocus), fixed y limits per metric and
+        optical path, Monte-Carlo 10th / 90th percentile lines, and requirement
+        overlays: MET-2745 for ``srps`` (nominal only) and MET-3739 for
+        ``lsf_gau_fwhms``.  A separate legend-only ``key.png`` is written once.
+
+        Parameters
+        ----------
+        optical_path : str
+            ``'nominal'`` or ``'spifu'``; used to select layouts and limits.
+        cube_packages : list of tuple
+            From :meth:`read_pkl_cubes` (optionally filtered by :meth:`remove_configs`).
+        iq_filer : lms_filer.Filer
+        **kwargs
+            ``is_defocus`` : bool, default False -- use the defocus layout / abscissa.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Bug: ``fig_layouts[optical_path]`` and the limit dictionaries are keyed
+          ``'spifu'`` / ``'nominal'``, but ``lmsiq.main`` passes ``opticon`` which is
+          ``'nominal'`` or ``'extended'`` (``Globals``); the extended path raises
+          ``KeyError``.
+        * Inconsistency: the date stamp shown in titles is parsed from
+          ``field_series['file_names'][0][4:14]``, i.e. from the Zemax file name, not
+          from the Filer configuration.
+        * Inconsistency: the 'defocus' abscissa entry is labelled "Wavelength" and
+          keyed ``'defocus'``, but :meth:`lmsiq_plot.Plot.series` still plots
+          ``x_values`` (wavelength) and distinguishes defocus values by marker.
+        * Clean-up: ``ipc_on`` loops over ``[True]`` only; ``n_plots`` is unused.
         """
         print()
         is_defocus = kwargs.get('is_defocus', False)

@@ -23,3 +23,16 @@ The code is intended to be run by execution of the parent program (eg file 'lmsi
 
 ### Tasks
 - Generate simulated data and analysis tools for performance testing (currently planned for summer 2026).
+### Documentation
+Sphinx documentation lives in `docs/` (Read the Docs configuration in `.readthedocs.yaml`).
+It contains a description of the four programs, the expected data layout and header
+contracts, the METIS pipeline team's analysis of which parts can be extracted into the
+pipeline's LMS recipes, a consolidated list of open questions / inconsistencies / bugs /
+clean-up suggestions harvested from the docstrings, and the API reference for every module.
+
+To build locally:
+
+    pip install -r docs/requirements.txt
+    cd docs
+    python tools/collect_notes.py     # refresh open_questions.md from the docstrings
+    sphinx-build -b html . _build/html

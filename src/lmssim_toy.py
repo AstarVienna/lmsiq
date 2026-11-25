@@ -1,6 +1,74 @@
 #!/usr/bin/env python
-"""
+"""ToySim: geometric forward model of LMS detector frames (``lmssim`` program).
 
+:class:`Toy` turns each observation of an AIT test into a four-detector LMS
+FITS mosaic without ScopeSim.  Instead of ScopeSim effects it uses the
+``lmsdist`` products directly: per-slice SVD distortion transforms
+(``lms_efp_mfp_*.fits``), the MFP -> detector affine matrices
+(``lms_dist_mfp_dfp_v{date}.fits``) and, on the nearest-transform path, the
+polynomial fit parameters.  Sources, masks, blaze and PSFs come from
+``lmssim_model.Model``; detector noise from ``lms_detector.Detector.detect``.
+
+Input files (relative to ``src/``; all outside the repository)
+----------------------------------------------------------------
+* ``../config/sim_template.fits``: header template.  Its primary header is
+  reused (``ORIGIN`` etc. overwritten) and the data shape of HDU 1 sets the
+  detector format.  The ``HIERARCH ESO DET DIT``, ``ESO DET NDIT`` and
+  ``ESO INS WLEN CEN`` keywords that ``lmsaiv`` reads therefore come from
+  this template, not from the observation.
+* ``../output/distortion/{opticon}/svd_fits_index_{nom|ext}_zmx.pkl``: index
+  of stored transforms keyed by configuration code (``'eo24_ean05'`` style),
+  used when ``lms_cfg_code`` starts with ``'eo'``.
+* ``{Filer.tf_dir}lms_efp_mfp_*.fits``, ``lms_dist_mfp_dfp_v{date}.fits`` and
+  ``lms_dist_efp_mfp_*_fit_parameters_v{date}.fits`` through
+  ``lms_filer.Filer`` (``set_configuration('distortion', opticon, False)``).
+* Zemax PSFs, WCU mask files and the Leiden sky through ``lmssim_model``.
+
+Output
+------
+``../data/test_toysim/{cfg_id}_000.fits`` per observation (the folder must
+exist): primary HDU plus ``DET1.DATA`` .. ``DET4.DATA`` image extensions.
+
+Header keywords written
+-----------------------
+Primary: ``ORIGIN = 'TOYSIM'``, ``HIERARCH ACHG REF_ECH_ORD``,
+``HIERARCH ACHG CFO CHOP X`` / ``Y`` (EFP chop offset, mm),
+``HIERARCH ACHG LASER WAVE`` (um), ``AIT OPTICON``, ``AIT PRI_ANG``,
+``AIT ECH_ANG`` (from the last transform's LMS configuration), plus
+everything the template carries.  Extensions: ``EXTNAME = 'DET{n}.DATA'``,
+``ID`` (detector number, string), ``CRVAL1D`` / ``CRVAL2D`` and ``X_CEN`` /
+``Y_CEN`` (detector centre, +-19.547 mm, strings), ``HIERARCH ESO DET3 CHIP
+GAIN`` ('2.00' el/ADU, string), ``HIERARCH AIT PIXEL_PITCH`` (18.0 um).
+
+These ``AIT`` / ``ACHG`` keywords are the only header contract that
+``lmsaiv_opt02`` understands; ScopeSim does not write them (Inconsistency).
+
+Notes
+-----
+* Open question: fluxes are scaled by ``lmssim_model`` ``k_toy_ss = 0.00177``
+  "to transform from toysim to scopesim flux values"; provenance unknown.
+* Inconsistency: ``CRVAL1D`` is +19.547 mm for detector 1 and -19.547 mm for
+  detector 2, the opposite sign to the irdb ``FPA_metis_lms_layout.dat``
+  (detector 1 at x = -19.547 mm) and to ``Globals.det_lims`` /
+  ``Transform.create_affines`` (detector 1 at negative x).
+* Bug: the nearest-transform path (``lms_cfg_code`` not starting with
+  ``'eo'``) calls ``Util.find_closest_transforms(wave_ref, ...)`` with
+  ``wave_ref`` still None (it is only assigned on the fixed-transform path)
+  and then ``PolyFit.wave_to_config(wave_ref.value / 1000., ...)`` although
+  ``wave_to_config`` expects um (``wxo_lim`` = 108-115 um x order); the path
+  fails or mis-scales by 1000.
+* Bug: ``n_exp = int(sim_config['lms_nexp'])`` is immediately overwritten by
+  ``n_exp = 1``; only one exposure is ever written.
+* Open question: the extended-source convolution uses the slice-13 PSF for
+  every slice, and ``psf_dict`` is loaded once for the first order processed
+  and reused for all other orders.
+* Clean-up: ``waves_mosaic`` and ``tau_ech_mosaic`` are filled but never
+  written (the ``debug`` branch writes the image HDUs again under a
+  ``_waves`` name); ``w_pnh``, ``mfp_slice`` / ``oob``, ``psf_sig``,
+  ``n_rows_written``, ``w_illuminated`` and ``fits_waves_out_path`` are
+  unused; the local ``model_configurations`` duplicates
+  ``Globals.model_configurations`` with ``coord_out = ('det_x', 'det_y')``
+  instead of ``('mfp_x', 'mfp_y')``.
 """
 import time
 import math
@@ -19,13 +87,102 @@ from lmsdist_polyfit import PolyFit
 
 
 class Toy:
+    """ToySim simulator: EFP source model -> distortion transforms -> detector mosaic.
+
+    Stateless; :meth:`run` is a static method and ``__init__`` does nothing.
+    """
 
     def __init__(self):
+        """Create a Toy instance (no state).
+        """
         return
 
     @staticmethod
     def run(sim_configs):
-        """ Trial new version which creates an EFP cube, then transforms it onto the detectors.
+        """Simulate every observation of a test with ToySim and write the mosaics.
+
+        Parameters
+        ----------
+        sim_configs : dict
+            ``{cfg_id: sim_config}`` from ``lms_obs_map.ObsMap.get_configuration``.
+            Keys read: ``'lms_msa'`` (opticon), ``'lms_cfg_code'``,
+            ``'lms_ech_w_off'`` (wavelength offset simulating an echelle rotation,
+            um), ``'lms_pp1'``, ``'wcu_fp2_1'``, ``'cfo_fp2'``, ``'cfo_chop_off_x'`` /
+            ``'_y'`` (EFP chop offsets, mm), ``'lms_dit'``, ``'lms_ndit'``,
+            ``'lms_nexp'``, plus those used by ``lmssim_model.Model``.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Algorithm per observation:
+
+        1. Transform selection.  If ``lms_cfg_code`` starts with ``'eo'`` the
+           configuration is looked up in the ``svd_fits_index_*_zmx`` pickle and the
+           matching ``lms_efp_mfp_*.fits`` is read (fixed transform, giving
+           ``wave_ref``, ``pri_ang``, ``ech_ang``, ``ech_ords``); otherwise
+           ``Util.find_closest_transforms`` and ``PolyFit.wave_to_config`` are used
+           (see Bug below).
+        2. Header from ``../config/sim_template.fits``; ``ORIGIN``,
+           ``ACHG REF_ECH_ORD`` (``ech_ords[1]`` in extended mode, else
+           ``ech_ords[0]``), ``ACHG CFO CHOP X`` / ``Y`` and ``ACHG LASER WAVE`` are
+           set.
+        3. Focal-plane mask from ``Model.get_fp_mask``; each pinhole position is
+           offset by the CFO chop and converted to a field slice number and beta
+           phase with ``Util.efp_y_to_slice_no``.
+        4. Sources: ``Model.load_source_lists``, ``Model.make_blaze_dictionary``,
+           ``Model.make_spectra`` (per-order background and pinhole spectra).
+        5. For every slice transform: blaze profile (``Model.make_tau_blaze``);
+           slice centre row from ``Util.efp_to_mfp`` + ``Util.mfp_to_dfp``; then,
+           for each detector the slice covers, a 250-row strip is built row by row
+           with ``Util.dfp_to_efp`` (wavelength and alpha per pixel), filled with
+           the interpolated background x blaze where ``|alpha| < efp_x_fov_mm / 2``,
+           and convolved (``scipy.signal.convolve2d``, 'same', 'symm') with the
+           slice-13 PSF.  Pinholes: for each pinhole within +-4 slices of the
+           current slice the point-source spectrum is mapped with
+           ``Util.efp_to_dfp``, split bilinearly between the two nearest rows,
+           weighted by ``Model.fit_beta_weights`` and convolved with the
+           offset-slice PSF.
+        6. ``Detector.detect(image, dit, n_dit)`` adds dark, shot and read noise;
+           four ``ImageHDU`` extensions are written with ``Filer.write_mosaic`` to
+           ``../data/test_toysim/{cfg_id}_000.fits``.
+
+        At debug level 'low' a round-trip test of ``Util.slice_to_efp_y`` /
+        ``Util.efp_y_to_slice_no`` is printed first; at 'medium' a per-slice timing
+        table.
+
+        * Bug: on the nearest-transform path ``wave_ref`` is None when passed to
+          ``Util.find_closest_transforms`` (only the ``'eo'`` path assigns it) and
+          ``wave_to_config`` receives ``wave_ref.value / 1000.`` although it
+          expects um.
+        * Bug: ``n_exp`` is forced to 1 after being read from ``lms_nexp``.
+        * Bug: ``beta_phase`` and ``beta_weight`` hold the values of the last
+          pinhole processed in step 3 and are applied to every pinhole in step 5,
+          so all pinholes are placed at that one beta phase.
+        * Bug: the pinhole wavelengths ``efp_ws`` are those of the last illuminated
+          row of the extended-background loop, not of the pinhole's own trace.
+        * Bug: the extended-background loop covers 251 rows
+          (``range(det_row_min, det_row_max + 1)``) for a 250-row strip; an
+          illuminated last row raises ``IndexError``.  Column indices are only
+          guarded against ``> 2047`` and row indices not at all.
+        * Open question: ``psf_dict`` is loaded once (first order encountered) and
+          reused for all orders; the slice-13 PSF is used for every slice.
+        * Open question: for darks (``ObsMap.is_dark``) the flux calculation is
+          skipped but transforms, spectra and blaze dictionary are still built, so
+          darks need the same input files as illuminated frames.
+        * Inconsistency: the ``'AIT ' + key.upper()`` header keys (``AIT OPTICON``,
+          ``AIT PRI_ANG``, ``AIT ECH_ANG``) are taken from ``lms_cfg``, which on the
+          fixed-transform path is the last transform's ``lms_configuration``; were
+          ``opt_transforms`` empty, ``lms_cfg`` would still be the string left by
+          the index loop.
+        * Clean-up: ``ID``, ``CRVAL1D``, ``CRVAL2D``, ``X_CEN``, ``Y_CEN`` and
+          ``ESO DET3 CHIP GAIN`` are written as formatted strings rather than
+          numbers; readers apply ``int()`` / ``float()``.
+        * Clean-up: the ``debug`` branch writes the same image HDUs a second time
+          as ``{cfg_id}_000.fits_waves`` instead of the ``waves_mosaic`` wavelength
+          maps.
         """
         wave_ref, w_pnh = None, None            # Define local variables
         psf_dict = None

@@ -1,16 +1,109 @@
+"""
+Matplotlib plotting helpers for the ``lmsiq`` program.
+
+Purpose
+-------
+Image collages of model PSF stacks (:meth:`Plot.images`, :meth:`Plot.collage`),
+LSF / enslitted-energy profile plots with Monte-Carlo envelopes
+(:meth:`Plot.plot_cube_profile`), per-field metric-versus-wavelength series with
+requirement overlays (:meth:`Plot.series`) and the pixel-phase plots
+(:meth:`Plot.phase_shift`).  Every plotting function optionally saves a PNG and then
+calls ``plt.show()``.
+
+Belongs to the ``lmsiq`` program (used by :mod:`lmsiq_cuber`, :mod:`lmsiq_phase`,
+:mod:`lmsiq_test`, :mod:`lms_ipc`).  Distinct from :mod:`lmsdist_plot` and
+:mod:`lmsaiv_plot`, which have their own ``Plot`` classes.
+
+Input data
+----------
+In-memory arrays and the ``lsf_data`` / ``ees_data`` dictionaries from
+:class:`lmsiq_analyse.Analyse`, the ``ds_dict`` / ``cube_dict`` dictionaries from
+:class:`lmsiq_image_manager.ImageManager` and :class:`lmsiq_cuber.Cuber`, and the
+``plot_data`` / ``plot_parameters`` structures built by :meth:`lmsiq_cuber.Cuber.plot`.
+Model stacks follow the convention column 0 = perfect model, 1 = as-designed, 2.. =
+Monte-Carlo instances.
+
+Outputs
+-------
+PNG files at the ``png_path`` given by the caller (``profiles/lsf``, ``profiles/ee``,
+``cube/series/png``, ``phase``, ``test`` under ``../output/iq/<opticon>/<date_stamp>/``)
+plus interactive windows.
+
+Notes
+-----
+* Inconsistency: every plotting method calls ``plt.show()`` unconditionally after an
+  optional ``savefig`` + ``close``, so batch runs block on a window (or show an empty
+  figure after the close) unless a non-interactive backend is active; the
+  ``plt.rcParams['backend'] = 'AGG'`` line in the constructor is commented out.
+* Inconsistency: :meth:`Plot.set_plot_area` mutates the global ``plt.rcParams``
+  font size on every call.
+* Bug: :meth:`Plot.phase_shift` calls ``_add_mc_percentile_profiles(y_mcs,
+  mc_percentiles, y_plots)`` with three positional arguments; the method takes five
+  (``x, y_mcs, mc_percentiles, y_plots, mc_mean_label``) and expects a dict, not the
+  list ``phase_shift`` builds.  The branch is only reached when ``mc_percentiles`` is
+  given, which no caller does.
+* Inconsistency: requirement thresholds MET-2745 (SRP 1e5, 0.85e5 above 4.8 um) and
+  MET-3739 (spectral FWHM 2.0 pixels) are hard-coded in :meth:`Plot.series`.
+"""
 import math
 import numpy as np
 import matplotlib.pyplot as plt
 
 
 class Plot:
+    """
+    Static plotting functions for lmsiq image stacks, profiles and metric series.
+
+    Plot-entry convention used by :meth:`plot_cube_profile`, :meth:`series` and
+    :meth:`_add_mc_percentile_profiles`: ``y_plots`` is a dict mapping a key to
+    ``(label, colour, linestyle, linewidth, marker, x, y)``; entries with ``label None``
+    are drawn but omitted from the legend.
+    """
 
     def __init__(self):
+        """
+        No-op constructor.
+
+        Notes
+        -----
+        * Clean-up: the commented ``plt.rcParams['backend'] = 'AGG'`` shows the intent
+          to run headless; it is not in force.
+        """
         # plt.rcParams['backend'] = 'AGG'
         return
 
     @staticmethod
     def set_plot_area(**kwargs):
+        """
+        Create a figure and a 2-D array of axes with common limits and labels.
+
+        Parameters
+        ----------
+        **kwargs
+            ``figsize`` : list, default [12, 9].
+            ``xlim``, ``ylim`` : limits applied to every axis (default None).
+            ``xlabel``, ``ylabel`` : str, set on the bottom-left axis only.
+            ``nrows``, ``ncols`` : int, default 1.
+            ``remplots`` : (row, col) pairs of axes to remove (e.g. for an incomplete
+            grid).
+            ``aspect`` : str, default 'auto'.
+            ``fontsize`` : int, default 16 -- written to ``plt.rcParams['font.size']``.
+            ``sharex``, ``sharey`` : bool, default True when the matching limit is set.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+        ax_list : ndarray of Axes, shape (nrows, ncols)
+            Always 2-D (``squeeze=False``).
+
+        Notes
+        -----
+        * Inconsistency: modifies the global rcParams font size as a side effect.
+        * Inconsistency: :meth:`images` passes ``**kwargs`` through and then also
+          ``nrows=``, ``ncols=``, ``xlim=``, ``ylim=`` explicitly; if the caller of
+          ``images`` supplied any of those names a ``TypeError`` (duplicate keyword)
+          results.  ``aspect='equal'`` from :mod:`lmsiq_test` passes through correctly.
+        """
         figsize = kwargs.get('figsize', [12, 9])
         xlim = kwargs.get('xlim', None)            # Common limits for all plots
         ylim = kwargs.get('ylim', None)            # Common limits for all plots
@@ -49,13 +142,52 @@ class Plot:
 
     @staticmethod
     def show():
-        """ Wrapper for matplotlib show function. """
+        """Call ``matplotlib.pyplot.show()``."""
         plt.show()
 
     @staticmethod
     def images(images, **kwargs):
-        """ Plot images from the first four observations, perfect, design and as many additional individual
-        models as will fit in the grid.
+        """
+        Display a list of images in a grid, optionally as differences from the first.
+
+        The colour scale is common to all panes: by default log10 with ``vmax`` the
+        global maximum and ``vmin = vmax / 1000``; with ``do_log=False`` linear between
+        the global min and max; ``vlim`` overrides both.  Images are filled into the
+        grid row by row; extra images beyond ``n_rows * n_cols`` raise ``IndexError``.
+
+        Parameters
+        ----------
+        images : list of ndarray
+            Same shape each.  Conventionally ``[perfect, design, MC_1, MC_2]``.
+        **kwargs
+            ``png_path`` : str or None -- save to ``png_path`` (matplotlib adds the
+            extension) and close the figure.
+            ``nrowcol`` : (n_rows, n_cols), default (1, 1).
+            ``shrink`` : float or None -- show only the central ``shrink`` fraction.
+            ``title`` : str -- figure suptitle.
+            ``pane_titles`` : list of str, one per image.
+            ``colourbar`` : bool, default True.
+            ``vlim`` : (vmin, vmax) or None.
+            ``difference`` : bool, default False -- plot ``img - images[0]``.
+            ``do_log`` : bool, default True.
+            Remaining keywords go to :meth:`set_plot_area` (``figsize``, ``aspect``,
+            ``fontsize`` ...).
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Inconsistency: ``difference=True`` with ``do_log=True`` takes log10 of a
+          difference image whose negative values are clipped to ``vmin``, hiding the
+          sign.
+        * Inconsistency: the linear-branch ``extent`` is ``(c1-1.5, c2+1.5, ...)`` while
+          the log branch uses ``(c1-0.5, c2-0.5, ...)``; pixel positions differ by one
+          pixel between the two modes.  ``do_half`` is a dead constant.
+        * Clean-up: ``plt.show()`` after ``savefig``/``close`` (module Notes);
+          ``shrink=1.0`` (as used by :meth:`collage`) selects ``ny + 1`` rows, i.e. the
+          whole image, so it is a no-op.
         """
         im_map = None
         png_path = kwargs.get('png_path', None)
@@ -140,6 +272,26 @@ class Plot:
 
     @staticmethod
     def _get_config_text(ds_dict):
+        """
+        One-line LaTeX title fragment describing a data set.
+
+        Parameters
+        ----------
+        ds_dict : dict
+            Needs ``'optical_path'``, ``'field_no'``, ``'slice_no'``, ``'spifu_no'``,
+            ``'wavelength'``.
+
+        Returns
+        -------
+        text : str
+            ``'Nominal ...'`` for ``optical_path == 'nominal'``, ``'Extended ...'`` for
+            ``'spifu'``; empty string otherwise.
+
+        Notes
+        -----
+        * Inconsistency: tests for ``'spifu'`` whereas ``Globals.extended`` is
+          ``'extended'``, so extended-mode titles are blank.
+        """
         opticon = ds_dict['optical_path']
         field_no = ds_dict['field_no']
         slice_no = ds_dict['slice_no']
@@ -157,6 +309,28 @@ class Plot:
 
     @staticmethod
     def collage(image_list, obs_dict, **kwargs):
+        """
+        2 x 2 log-scale collage of the perfect, design and first two MC images.
+
+        Parameters
+        ----------
+        image_list : list of ndarray
+            At most four images are placed (``nrowcol=(2, 2)``); more raise
+            ``IndexError`` inside :meth:`images`.
+        obs_dict : dict or None
+            If given, the default title is :meth:`_get_config_text` of it.
+        **kwargs
+            ``png_path``, ``aspect``, ``title``, ``pane_titles`` (default
+            ``['Perfect', 'Design', 'M-C run 0', 'M-C run 1']``).
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Clean-up: unused at HEAD.
+        """
         png_path = kwargs.get('png_path', None)
         aspect = kwargs.get('aspect', 'auto')
         pane_titles = kwargs.get('pane_titles', ['Perfect', 'Design', 'M-C run 0', 'M-C run 1'])
@@ -173,12 +347,75 @@ class Plot:
 
     @staticmethod
     def _make_profile_title(axis, wav, plot_label, ipc_tag):
+        """
+        Legacy two-line profile title ``'<label>\\n<axis> axis, lambda = <wav> um, <ipc>'``.
+
+        Parameters
+        ----------
+        axis : str
+        wav : float
+            Wavelength in um.
+        plot_label : str
+        ipc_tag : str
+
+        Returns
+        -------
+        title : str
+
+        Notes
+        -----
+        * Clean-up: unused at HEAD.
+        """
         fmt = r' $\lambda$ =' + "{:7.3f} um, {:s}"
         title = plot_label + '\n' + axis + ' axis,' + fmt.format(wav, ipc_tag)
         return title
 
     @staticmethod
     def plot_cube_profile(type_key, data, name, ds_dict, axis, **kwargs):
+        """
+        Plot LSF or enslitted-energy profiles for perfect, design and Monte-Carlo models.
+
+        Perfect (red, circles) and design (green, crosses) curves are drawn from
+        ``data['yvals'][:, 0]`` and ``[:, 1]``.  If ``ds_dict['mc_bounds']`` is not
+        None, :meth:`_add_mc_percentile_profiles` adds the MC mean (blue) and the
+        min/max envelope (thin blue lines plus a sky-blue fill) and, if
+        ``mc_percentiles`` is given, interpolated percentile curves.  For ``'lsf'``
+        the legend labels carry the linear FWHM of the perfect and design curves and
+        the mean linear FWHM of the MC curves (``data['lin_fwhm']``).
+
+        Parameters
+        ----------
+        type_key : {'ee', 'lsf'}
+            Selects title lead and axis labels.
+        data : dict
+            ``ees_data`` or ``lsf_data`` from :class:`lmsiq_analyse.Analyse`
+            (``'xvals'``, ``'yvals'``, and ``'lin_fwhm'`` for ``'lsf'``).
+        name : str
+            Profile name, used in the title.
+        ds_dict : dict
+            Needs ``'wavelength'`` and ``'mc_bounds'``.
+        axis : {'spectral', 'spatial', 'across-slice', 'along-slice', 'radial'}
+            Selects axis labels (``'radial'`` overrides to encircled-energy labels).
+        **kwargs
+            ``xlog`` : bool -- log x axis.
+            ``png_path`` : str or None.
+            ``mc_percentiles`` : list of ``(percentile, linestyle, linewidth)`` or None.
+            ``xlim`` : (lo, hi) or None.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Bug: ``axis == 'radial'`` looks up ``data_par['xlabels'][axis]`` *before* the
+          override and raises ``KeyError`` because ``'radial'`` is not in the label
+          dictionaries.
+        * Inconsistency: the title uses a raw string ``r'\\n{:s},'`` so the intended
+          newline is rendered literally as backslash-n.
+        * Clean-up: ``title_lead`` is printed to the console rather than used in the
+          title; ``plt.show()`` after ``savefig``.
+        """
         xlog = kwargs.get('xlog', False)
         png_path = kwargs.get('png_path', None)
         mc_percentiles = kwargs.get('mc_percentiles', None)
@@ -278,6 +515,41 @@ class Plot:
 
     @staticmethod
     def _add_mc_percentile_profiles(x, y_mcs, mc_percentiles, y_plots, mc_mean_label):
+        """
+        Add Monte-Carlo mean, min/max and percentile curves to a ``y_plots`` dict.
+
+        Adds ``'<M-C>'`` (mean over models, blue solid 1.5), ``'pc000'`` and
+        ``'pc100'`` (per-point minimum and maximum, blue solid 0.5, no legend label).
+        For each ``(pc, ls, lw)`` in ``mc_percentiles`` the models are sorted per point,
+        assigned nominal percentiles ``u = arange(n) * (n + 1) / 100`` and the value at
+        ``pc`` is linearly interpolated, giving a curve labelled ``'<pc> %ile'``.
+
+        Parameters
+        ----------
+        x : ndarray, shape (n_pts,)
+        y_mcs : ndarray, shape (n_pts, n_mc)
+            Monte-Carlo columns only (``yvals[:, 2:]``).
+        mc_percentiles : list of (int, str, float) or None
+        y_plots : dict
+            Existing plot entries; extended in place.
+        mc_mean_label : str
+            Legend label for the mean curve.
+
+        Returns
+        -------
+        y_plots : dict
+        y_mc_lo : ndarray, shape (n_pts,)
+        y_mc_hi : ndarray, shape (n_pts,)
+
+        Notes
+        -----
+        * Bug: the nominal percentile grid ``arange(n) * (n + 1) / 100`` runs from 0
+          to ``(n - 1)(n + 1) / 100``, which spans 0-100 only for ``n`` close to 100
+          Monte-Carlo instances.  For ``n = 10`` it runs 0-0.99, so ``np.interp`` at
+          10 or 90 clamps to the last (maximum) value and both 'percentile' curves
+          coincide with the maximum envelope.  The intended grid is presumably
+          ``100 * (arange(n) + 0.5) / n`` or similar.
+        """
         y_mc_lo, y_mc_hi = np.amin(y_mcs, axis=1), np.amax(y_mcs, axis=1)
         y_mc_mean = np.mean(y_mcs, axis=1)
 
@@ -303,6 +575,50 @@ class Plot:
 
     @staticmethod
     def series(data, params):
+        """
+        Plot one image-quality metric against wavelength (or spifu slice), one panel per field.
+
+        Each entry of ``data`` (one field) is drawn in the panel given by
+        ``field_rowcols`` -- a 3 x 3 map placing field 5 top-left, 2 top-centre, 8
+        top-right, 4 / 1 / 7 in the middle row and 6 / 3 / 9 at the bottom (fields
+        10-18 repeat the pattern; spifu data shift one column left).  Per panel: x is
+        sorted; the perfect model (red circles) and design model (green dots, or one
+        dashed series per defocus value with markers ``{0: 'o', 50: '1', 100: 'x',
+        200: '+'}`` when ``abscissa[0] == 'defocus'``) are drawn; if ``mc_bounds`` is
+        set, :meth:`_add_mc_percentile_profiles` adds the MC mean, envelope fill and
+        percentiles.  Requirement overlays: ``do_srp_rqt`` draws MET-2745 (SRP 1e5,
+        dropping to 0.85e5 for x > 4.8 um); ``do_fwhm_rqt`` draws MET-3739 (FWHM 2.0
+        pixels).  With ``key_only`` the data are replaced by single points at (0, 0) so
+        that only the legend is meaningful.
+
+        Parameters
+        ----------
+        data : dict
+            ``field_id -> field_data`` from :meth:`lmsiq_cuber.Cuber.plot`; each
+            ``field_data`` has ``'field_no'``, ``'is_spifu'``, ``'mc_bounds'``,
+            ``'x_values'``, ``'focus_shifts'`` and the metric arrays (lists over
+            configurations of arrays over models).
+        params : dict
+            ``'plot_key'``, ``'key_only'`` (bool), ``'png_path'``, ``'xscale'``
+            (``'auto'`` -> no x limits), ``'fig_layout'`` = (nrows, ncols, figsize),
+            ``'title'``, ``'ordinate'`` = (key, label, ylim), ``'abscissa'`` = (key,
+            label, xlim), ``'do_srp_rqt'``, ``'do_fwhm_rqt'``, ``'mc_percentiles'``.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Inconsistency: the requirement thresholds and the 4.8 um break are
+          hard-coded here rather than taken from a requirements table.
+        * Inconsistency: ``y_srp`` is built with ``np.full(y.shape, 1E5)`` where ``y``
+          is the last plotted series -- for ``key_only`` that is a single point.
+        * Bug: for the defocus branch ``symbols[defoc]`` raises ``KeyError`` for any
+          focus shift other than 0, 50, 100, 200 um.
+        * Clean-up: ``y_mcs`` is only defined when ``mc_bounds`` is not None and is
+          used only under the same condition; ``plt.show()`` after ``savefig``.
+        """
 
         plot_key = params['plot_key']
         key_only = params['key_only']
@@ -425,6 +741,46 @@ class Plot:
 
     @staticmethod
     def phase_shift(data_type, data_tuple, ds_dict, ipc_tag, **kwargs):
+        """
+        Plot a quantity versus applied sub-pixel image shift for the model stack.
+
+        ``data`` is normalised column-wise by its mean (``normalise=True``), then the
+        perfect (red circles), design (green crosses) and MC-mean (blue diamonds)
+        columns are drawn against ``x``.
+
+        Parameters
+        ----------
+        data_type : str
+            Quantity name for the title (``'xcentroids'``, ``'ycentroids'``,
+            ``'photometry'``, ``'xfwhm'``).
+        data_tuple : tuple
+            ``(x, data)`` with ``x`` shape (n_shifts,) in detector pixels and ``data``
+            shape (n_shifts, n_models), column 0 = perfect, 1 = design, 2.. = MC.
+        ds_dict : dict
+            For :meth:`_get_config_text`.
+        ipc_tag : str
+        **kwargs
+            ``png_path`` : str or None.
+            ``mc_percentiles`` : list or None (see Notes).
+            ``normalise`` : bool, default True.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Bug: the ``mc_percentiles`` branch calls
+          ``_add_mc_percentile_profiles(y_mcs, mc_percentiles, y_plots)`` -- three
+          positional arguments for a five-parameter method, and ``y_plots`` here is a
+          list of 6-tuples rather than the dict of 7-tuples the helper expects.  It
+          would raise ``TypeError``; no caller passes ``mc_percentiles``.
+        * Bug: :meth:`lmsiq_phase.Phase.process` fills only the first four model
+          columns, so ``np.mean(data, axis=0)`` is zero for columns 4.. and the
+          normalisation produces ``nan``/``inf`` (numpy warnings) that enter the MC
+          mean.
+        * Clean-up: ``plt.show()`` after ``savefig``.
+        """
         x, data = data_tuple
 
         png_path = kwargs.get('png_path', None)

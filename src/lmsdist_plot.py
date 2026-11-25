@@ -1,7 +1,59 @@
 #!/usr/bin/env python
-""" Created on Feb 21, 2018
+"""Matplotlib diagnostic plots for the ``lmsdist`` distortion-fitting program.
 
-@author: achg
+Purpose
+-------
+Static plotting helpers used while fitting the E-TNT-ATC-MET-1058 distortion
+transforms: wavelength coverage / dispersion per configuration
+(:meth:`Plot.series`), the prism-angle-versus-wavelength fit
+(:meth:`Plot.wave_v_prism_angle`), 3-D views of the ``n*lambda`` and
+matrix-term surface fits (:meth:`Plot.wxo_fit`, :meth:`Plot.transform_fit`),
+and ray-trace versus transform comparisons in the mosaic focal plane
+(:meth:`Plot.plot_mfp_points`).  ``lmsdist_trace.RayTrace`` and
+``lmsdist_polyfit.PolyFit`` call into this module; ``lmsaiv`` has its own
+``lmsaiv_plot`` module.
+
+Program
+-------
+``lmsdist`` (all plots are gated by ``Globals.is_debug(...)`` in
+``lmsdist.run`` and ``PolyFit``).
+
+Input data
+----------
+In-memory objects only: ``RayTrace`` traces (``trace.series``,
+``trace.transforms``, ``trace.lms_config``), fit dictionaries from
+``PolyFit`` and ``term_values`` dicts from ``lmsdist_util.Util.get_term_values``.
+No files are read.
+
+Outputs
+-------
+None on disk.  Every public routine ends in ``matplotlib.pyplot.show()``
+(via :meth:`Plot.show`), which blocks in an interactive backend, and returns
+``None`` (``transform_fit`` also returns its residual dict).
+
+Notes
+-----
+- Bug: :meth:`Plot.efficiency_v_wavelength` calls ``ax.plot_focal_planes``,
+  which is not a ``matplotlib.axes.Axes`` method -> ``AttributeError``.
+- Bug: :meth:`Plot.series` with ``colour_by='slice'`` reads
+  ``Globals.n_slices``, which does not exist (``Globals.n_fslices`` does) ->
+  ``AttributeError``; and then indexes ``rgb[slice_no - 1]`` with ``rgb`` still
+  ``None``.
+- Bug: :meth:`Plot.series` passes ``transform.slice_configuration`` (keys
+  ``slice_no, ech_ord, w_min, w_max``) as the filter to
+  ``RayTrace.get_series``, which looks every key up in ``trace.series``;
+  ``w_min`` is not a series -> ``KeyError`` once
+  ``RayTrace.find_wavelength_bounds`` has run (always, in ``lmsdist.run``).
+- Bug: :meth:`Plot.plot_mfp_points` reads ``mfp_plot['spifu_no']`` but the
+  dict built in ``lmsdist.run`` (``mfp_plot_points``) has no such key ->
+  ``KeyError`` at debug level ``'low'``.
+- Bug: :meth:`Plot.round_trip` calls ``set_plot_area(title, ...)`` with a
+  positional argument (the function accepts keywords only) and expects a bare
+  ``ax_list`` return where a ``(fig, ax_list)`` tuple is returned.
+- Clean-up: every function calls ``plt.show()`` inside the compute path; for
+  reuse as report generators they would need to return ``Figure`` objects.
+- Clean-up: :meth:`Plot.show` re-imports ``matplotlib.pyplot`` locally
+  although it is already imported at module level.
 """
 import math
 import numpy as np
@@ -11,12 +63,60 @@ from lmsdist_util import Util
 
 
 class Plot:
+    """Namespace of static plotting routines for ``lmsdist`` (see module docstring).
+
+    Notes
+    -----
+    - Clean-up: instances carry no state; ``efficiency_v_wavelength`` is the
+      only non-static method and only uses ``self`` to reach static methods.
+    """
 
     def __init__(self):
+        """Create a ``Plot`` object.  No state is initialised."""
         return
 
     @staticmethod
     def set_plot_area(**kwargs):
+        """Create a figure with an ``nrows x ncols`` grid of axes and common decorations.
+
+        Wraps ``plt.subplots(..., squeeze=False)`` so ``ax_list`` is always
+        2-D, sets the global font size, applies common ``xlim`` / ``ylim`` /
+        aspect to every axis, labels only the bottom-left axis, and optionally
+        removes axes listed in ``remplots``.
+
+        Parameters
+        ----------
+        figsize : list of float, optional
+            Inches, default ``[9, 6]``.
+        xlim, ylim : sequence of float, optional
+            Common axis limits (default none).
+        xlabel, ylabel : str, optional
+            Applied to axis ``[nrows-1, 0]`` only.
+        ncols, nrows : int, optional
+            Grid size, default 1 x 1.
+        remplots : array_like, optional
+            ``(k, 2)`` list of ``[row, col]`` axes to remove.
+        aspect : str or float, optional
+            Passed to ``Axes.set_aspect``; default ``'auto'``.
+        fontsize : float, optional
+            Sets ``plt.rcParams['font.size']`` globally; default 16.
+        sharex, sharey : bool, optional
+            Passed to ``plt.subplots``.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+        ax_list : numpy.ndarray
+            2-D array of ``Axes`` of shape ``(nrows, ncols)``.
+
+        Notes
+        -----
+        - Inconsistency: ``RayTrace.plot_slice_map`` and :meth:`round_trip`
+          call this with a positional title and expect only ``ax_list`` back;
+          both would fail (``TypeError``).
+        - Clean-up: modifies the global ``rcParams`` font size as a side
+          effect.
+        """
         figsize = kwargs.get('figsize', [9, 6])
         xlim = kwargs.get('xlim', None)            # Common limits for all plots
         ylim = kwargs.get('ylim', None)            # Common limits for all plots
@@ -55,6 +155,35 @@ class Plot:
         return fig, ax_list
 
     def efficiency_v_wavelength(self, weoas, **kwargs):
+        """Plot echelle blaze efficiency versus wavelength, one curve per order.  Broken.
+
+        Parameters
+        ----------
+        weoas : tuple
+            ``(waves, effs, orders, angles)`` as returned by
+            ``lms_efficiency.Efficiency.test``; ``waves`` and ``effs`` have
+            shape ``(n_angles, n_orders)``.
+        xlim : sequence of float, optional
+            Wavelength limits in microns (default data range).
+        ylim : sequence of float, optional
+            Default ``[0, 1]``.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AttributeError
+            Always: ``ax.plot_focal_planes`` is not a ``matplotlib`` ``Axes``
+            method (``ax.plot`` was evidently intended).
+
+        Notes
+        -----
+        - Bug: ``ax.plot_focal_planes(...)`` -> ``AttributeError``; looks like
+          an accidental rename of ``ax.plot``.
+        - Clean-up: only called from the study script ``lms_test.py``.
+        """
 
         waves, effs, orders, angles = weoas
         n_angs, n_orders = waves.shape
@@ -90,7 +219,24 @@ class Plot:
 
     @staticmethod
     def _make_colours(n_colours):
-        """ Generate a list of colours """
+        """Return ``n_colours`` RGB triples by stepping (r, g, b) += (0.9, 0.3, 0.5) mod 1.
+
+        Parameters
+        ----------
+        n_colours : int
+
+        Returns
+        -------
+        list of list of float
+            RGB values in [0, 1); the first colour is ``[0.9, 0.3, 0.5]``, not
+            black (black is only the starting point before the first step).
+
+        Notes
+        -----
+        - Inconsistency: the comment "Always start with black" is not what the
+          loop does; the increment is applied before the first colour is
+          appended.
+        """
         colours = []
         r, g, b = 0.0, 0.0, 0.0         # Always start with black
         for i in range(0, n_colours):
@@ -105,6 +251,27 @@ class Plot:
 
     @staticmethod
     def make_rgb_gradient(vals):
+        """Map values linearly onto a blue -> green -> red colour ramp.
+
+        With ``f = (vals - min) / (max - min)``: ``R = f``, ``G = sin(pi f)``,
+        ``B = 1 - f``.
+
+        Parameters
+        ----------
+        vals : array_like
+            Values to colour-code (e.g. wavelengths or slice indices).
+
+        Returns
+        -------
+        numpy.ndarray
+            Shape ``(len(vals), 3)`` RGB array.
+
+        Raises
+        ------
+        ZeroDivisionError / RuntimeWarning
+            If all values are equal (``max == min``); with numpy arrays this
+            yields NaN colours rather than an exception.
+        """
         n_pts = len(vals)
         rgb = np.zeros((n_pts, 3))
 
@@ -122,7 +289,44 @@ class Plot:
     @staticmethod
     def wave_v_prism_angle(wpa_fit, wpa_model, ea_zero_waves, ea_zero_pas, all_boresights,
                            differential=False, echelle_angles=False):
-        """ Plot fit of prism angle to wavelength compared with the trace data it is derived from.
+        """Plot the prism angle = f(wavelength) fit and its residuals (two stacked panels).
+
+        Upper panel: the ``(ea_zero_waves, ea_zero_pas)`` fit points as open
+        circles and the polynomial ``wpa_model(x, *wpa_fit['wpa_opt'])`` as a
+        line, with the fitted coefficients written into the title.  Lower
+        panel: ``data - fit`` residuals.
+
+        Parameters
+        ----------
+        wpa_fit : dict
+            ``{'wpa_opt': coefficients (ascending power), ...}`` from
+            ``PolyFit.create_polynomial_fit``.
+        wpa_model : callable
+            ``PolyFit.poly_model`` or compatible ``f(x, *coeff)``.
+        ea_zero_waves, ea_zero_pas : array_like
+            Per-order wavelength (microns) and prism angle (deg) at echelle
+            angle zero, the data that were fitted.
+        all_boresights : numpy.ndarray
+            ``(n_configs, 4)`` rows ``(wave, pri_ang, ech_ang, ech_ord)``; only
+            used when ``echelle_angles`` is True.
+        differential : bool, optional
+            Only changes the y-axis label text; no derivative is computed.
+        echelle_angles : bool, optional
+            If True, over-plot ``pri_ang + ech_ang`` versus wavelength for each
+            order from ``all_boresights``.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Inconsistency: ``differential=True`` relabels the axis as a
+          sensitivity (micron/deg) but the plotted quantity is unchanged.
+        - Clean-up: the coefficient string in the title labels the linear term
+          with a bare ``lambda`` and higher terms with ``lambda^i``, but the
+          constant term gets no label and the ordering logic sets ``lam_text``
+          one iteration late.
         """
         x, y = np.array(ea_zero_waves), np.array(ea_zero_pas)
 
@@ -168,8 +372,37 @@ class Plot:
 
     @staticmethod
     def wxo_fit(wxo_fit, term_values, surface_model, plot_residuals=False):
-        """ Plot the polynomial surface fit to wavelength x echeller order as a function of echelle and
-        prism rotation angle.
+        """3-D scatter of ``n*lambda_bs`` versus (prism angle, echelle angle) with the fitted surface.
+
+        Data points are ``term_values['w_bs'] * term_values['ech_ords']`` at
+        ``(pri_ang, ech_ang)``; the surface is ``surface_model`` evaluated on a
+        50 x 50 grid over prism angle 5..8 deg and echelle angle -6..+6 deg.
+        The residual standard deviation is printed in nm.
+
+        Parameters
+        ----------
+        wxo_fit : dict
+            ``{'wxo_opt': 10 coefficients, ...}`` from ``PolyFit.find_wxo_fit``.
+        term_values : dict
+            From ``Util.get_term_values`` (``pri_ang, ech_ang, w_bs, ech_ords``).
+        surface_model : callable
+            ``PolyFit.surface_model``.
+        plot_residuals : bool, optional
+            If True plot ``(data - model) * 1000`` (nm) instead of the data and
+            omit the surface.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Open question: the grid ranges 5..8 deg (prism) and -6..6 deg
+          (echelle) are hard-coded; whether they span the actual LMS
+          mechanism ranges is not stated.
+        - Clean-up: the local name ``wxo_fit`` shadows the method name.
+        - Clean-up: prints to stdout instead of returning the residual
+          statistic.
         """
         x = np.array(term_values['pri_ang'])
         y = np.array(term_values['ech_ang'])
@@ -207,7 +440,41 @@ class Plot:
 
     @staticmethod
     def transform_fit(term_fit, term_values, surface_model, plot_residuals=False, do_plots=True):
-        """ Make a 3D plot of data points and the surface that fits them.
+        """Grid of 3-D plots of the fitted surface for each element of matrix A of one slice.
+
+        Creates an ``svd_order x svd_order`` grid of 3-D axes, removes those
+        with ``row + col > svd_order - 1`` (the masked lower-right triangle),
+        and for each remaining element ``c[row, col]`` of matrix ``'a'`` shows
+        the per-configuration values (red) and the fitted surface (grey) or,
+        with ``plot_residuals``, the fractional residual
+        ``100 * (data - model) / model`` in percent (black).
+
+        Parameters
+        ----------
+        term_fit : dict
+            ``{'a': ndarray (4, 4, 10), ...}`` from ``PolyFit.find_slice_fit``.
+        term_values : dict
+            From ``Util.get_term_values`` (``pri_ang, ech_ang, matrices,
+            slice_no``).
+        surface_model : callable
+            ``PolyFit.surface_model``.
+        plot_residuals : bool, optional
+        do_plots : bool, optional
+            Unused; the figure is always drawn.
+
+        Returns
+        -------
+        dict
+            ``{'slice_no': n, 'a': {row: {col: residual_array}}}``.
+
+        Notes
+        -----
+        - Inconsistency: only matrix ``'a'`` is plotted (``for mat_tag in
+          ['a']``); B, AI, BI are not inspected.
+        - Open question: the fractional residual divides by ``z_model`` and
+          will blow up for near-zero coefficients.
+        - Clean-up: ``do_plots`` is a dead parameter; the grid ranges 5..8 and
+          -6..6 deg are duplicated from :meth:`wxo_fit`.
         """
         pri_ang = np.array(term_values['pri_ang'])
         ech_ang = np.array(term_values['ech_ang'])
@@ -274,6 +541,44 @@ class Plot:
 
     @staticmethod
     def plot_mfp_points(mfp_plot, decorations, **kwargs):
+        """Overlay ray-trace, slice-transform and fit-transform positions in the mosaic plane.
+
+        For each of the three point sets ``'ray'``, ``'sli'``, ``'fit'`` in
+        ``mfp_plot`` (lists of ``{'mfp_x', 'mfp_y'}`` dicts, one per
+        slice/order) the points are drawn with the marker/colour from the
+        matching entry of ``decorations``.  With ``ref_xy`` the ``'ray'``
+        coordinates are subtracted so the plot shows offsets.  With ``grid`` a
+        pixel grid of pitch ``xy_pix = 0.018`` mm is drawn.  Each ``'fit'``
+        set is labelled ``"{slice}_{spifu}_{order}"``.
+
+        Parameters
+        ----------
+        mfp_plot : dict
+            Keys ``'slice_no', 'spifu_no', 'ech_ord'`` (lists) and
+            ``'ray', 'sli', 'fit'`` (lists of point dicts).
+        decorations : list of tuple
+            Three ``(label, colour, marker, markersize)`` tuples.
+        ref_xy : bool, optional
+            Plot differences relative to the ``'ray'`` set.
+        grid : bool, optional
+            Draw an 18 micron pixel grid.
+        title : str, optional
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Bug: ``mfp_plot['spifu_no']`` is required but ``lmsdist.run`` builds
+          ``mfp_plot_points`` with keys ``slice_no, ech_ord, ray, sli, fit``
+          only -> ``KeyError`` when the plot is enabled (debug ``'low'``).
+        - Inconsistency: the grid pitch ``0.018`` mm is hard-coded instead of
+          ``Globals.nom_pix_pitch / 1000``.
+        - Clean-up: ``x -= x_ref`` modifies arrays created from the input
+          lists via ``np.array`` so the caller's data are safe, but only by
+          accident of the copy.
+        """
         xy_ref = kwargs.get('ref_xy', False)
         do_grid = kwargs.get('grid', False)
         title = kwargs.get('title', '')
@@ -327,6 +632,33 @@ class Plot:
 
     @staticmethod
     def round_trip(y_arr, y_rtn_arr, **kwargs):
+        """Plot original versus round-tripped sample values.  Broken.
+
+        Parameters
+        ----------
+        y_arr : numpy.ndarray
+            Original values (flattened for plotting).
+        y_rtn_arr : numpy.ndarray
+            Values after a forward-and-inverse transform.
+        title : str, optional
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        TypeError
+            Always: :meth:`set_plot_area` accepts keyword arguments only but is
+            called with ``title`` positionally.
+
+        Notes
+        -----
+        - Bug: positional ``title`` argument to ``set_plot_area``; and the
+          return value is treated as ``ax_list`` although a ``(fig, ax_list)``
+          tuple is returned.
+        - Clean-up: not called anywhere in the repository.
+        """
         title = kwargs.get('title', 'title')
         ax_list = Plot.set_plot_area(title,
                                      xlabel="sample",
@@ -347,6 +679,24 @@ class Plot:
 
     @staticmethod
     def _cycle_ijk(ijk, dir):
+        """Rotate the three RGB channel indices in ``ijk`` in place by ``dir`` (mod 3).
+
+        Parameters
+        ----------
+        ijk : list of int
+            Three channel indices, modified in place.
+        dir : int
+            ``+1`` or ``-1``.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Clean-up: ``dir`` shadows the Python built-in; only used by
+          :meth:`_make_colour_list`.
+        """
         for v in range(0, 3):
             ijk[v] += dir
             if ijk[v] < 0:
@@ -357,7 +707,31 @@ class Plot:
 
     @staticmethod
     def _make_colour_list(n_shades_ramp=1, sat=1.):
-        """ Make a list of colours by tracking around the colour triangle. 
+        """Return a tuple of RGB colours obtained by walking around the colour hexagon.
+
+        Builds ``6 * (3 * n_shades_ramp - 1)`` colours by holding one channel at
+        ``sat``, ramping a second up then down, and cycling the channel roles
+        with :meth:`_cycle_ijk`.
+
+        Parameters
+        ----------
+        n_shades_ramp : int, optional
+            Shades per triangle edge; default 1.
+        sat : float, optional
+            Saturation (maximum channel value); default 1.0.
+
+        Returns
+        -------
+        tuple of numpy.ndarray
+            Each element an RGB triple.
+
+        Notes
+        -----
+        - Open question: ``up`` / ``down`` from ``numpy.arange`` have
+          ``dcol`` elements only when ``sat / dcol`` divides exactly; for other
+          ``n_shades_ramp`` values the slice assignment
+          ``rgbs[c:c+dcol, j] = up`` may raise a shape mismatch.
+        - Clean-up: not called anywhere in the repository.
         """
         n_triangle_edges = 3
         n_colours_ramp = n_shades_ramp * n_triangle_edges
@@ -388,6 +762,61 @@ class Plot:
     @staticmethod
     def series(plot_type, traces, model_config,
                colour_by='config', xlimits=None, ylimits=None, labels=False):
+        """Plot wavelength coverage, dispersion or mosaic bandwidth for a list of ray traces.
+
+        For every ``RayTrace`` in ``traces`` and every slice transform in it,
+        the per-slice ray series are extracted with ``trace.get_series`` and
+        plotted against wavelength according to ``plot_type``:
+
+        - ``'coverage'``: ``y = pri_ang + 0.1 * ech_ang + 0.004 * fslice_no
+          + 0.001 * mfp_y`` -- a synthetic ordinate that separates
+          configurations and slices so the wavelength extent of each can be
+          read off; the outline of the lowest and highest slice is drawn in
+          black.
+        - ``'dispersion'``: ``-1000 * (nom_pix_pitch / 1000) * dlambda / dmfp_x``
+          in nm per pixel, from finite differences of consecutive rays
+          (``waves[1:] - waves[:-1]`` over ``mfp_x[1:] - mfp_x[:-1]``); the
+          sign flip reflects ``mfp_x`` increasing towards shorter wavelength.
+        - ``'nm_det'``: the slice bandwidth ``(w_max - w_min) * 1000`` nm from
+          ``slice_configuration`` as a constant per slice.
+
+        Parameters
+        ----------
+        plot_type : {'coverage', 'dispersion', 'nm_det'}
+        traces : list of RayTrace
+        model_config : tuple
+            ``Filer.model_configuration``; only ``opticon`` (element 1) is
+            used, and only when ``colour_by == 'slice'``.
+        colour_by : {'config', 'slice', 'slice_wavelength'}, optional
+            ``'config'`` colours each trace; ``'slice_wavelength'`` colours
+            each ray by wavelength; ``'slice'`` is broken (see Notes).
+        xlimits, ylimits : sequence of float, optional
+        labels : bool, optional
+            Annotate each trace with ``"PA{pri_ang}, EA{ech_ang}"``.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Bug: ``trace.get_series('wavelength', slice_config)`` uses the full
+          ``slice_configuration`` dict (including ``w_min`` / ``w_max``) as a
+          filter; ``RayTrace.get_series`` indexes ``trace.series[key]`` for each
+          key, and there is no ``'w_min'`` series -> ``KeyError`` for any trace
+          on which ``find_wavelength_bounds`` has run.
+        - Bug: ``colour_by='slice'`` references the non-existent
+          ``Globals.n_slices`` (``AttributeError``) and later indexes
+          ``rgb[slice_no - 1]`` while ``rgb`` is ``None``.
+        - Open question: the ``'dispersion'`` finite difference assumes
+          consecutive rays in the series are neighbours in wavelength along the
+          same alpha; rays at the same wavelength but different alpha give a
+          zero denominator and infinite dispersion.
+        - Inconsistency: the ``'coverage'`` ordinate weights (0.1, 0.004,
+          0.001) are arbitrary display constants with no physical meaning.
+        - Clean-up: the loop variable ``i`` is reused for the inner
+          per-point loop, clobbering the trace index used for colouring.
+        """
         _, opticon, _, _, _, _ = model_config
         titles = {'coverage': ('Wavelength coverage', r'$\theta_{prism}$ + 0.1 $\theta_{echelle}$ + det(y) / metre'),
                   'dispersion': ('Dispersion [nm / column]', 'Dispersion [nm / pixel]'),
@@ -491,7 +920,36 @@ class Plot:
 
     @staticmethod
     def plot_points(ax, x, y, **kwargs):
-        """ Plot an array of points in the open plot region.
+        """Scatter-plot points on an existing axis, optionally with a per-point RGB colour.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes
+        x, y : array_like
+        fs : str, optional
+            Marker fill style (default ``'none'``).
+        mk : str, optional
+            Marker (default ``'o'``).
+        mew : float, optional
+            Marker edge width (default 1.0).
+        ms : float, optional
+            Marker size (default 3).
+        color : str, optional
+            Single colour (default ``'black'``); ignored if ``rgb`` given.
+        rgb : numpy.ndarray, optional
+            ``(n_pts, 3)`` per-point colours; forces one ``ax.plot`` call per
+            point.
+        label : str, optional
+            Legend label.  With ``rgb`` the label is attached to every point.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Clean-up: the per-point loop in the ``rgb`` branch is O(n) plot
+          calls; ``ax.scatter(x, y, c=rgb)`` would do the same in one call.
         """
         n_pts = len(x)
         fs = kwargs.get('fs', 'none')
@@ -512,6 +970,12 @@ class Plot:
 
     @staticmethod
     def show():
-        """ Wrapper for matplotlib show function. """
+        """Call ``matplotlib.pyplot.show()`` (blocking in interactive backends).
+
+        Notes
+        -----
+        - Clean-up: re-imports ``matplotlib.pyplot`` locally although the
+          module already imports it as ``plt``.
+        """
         import matplotlib.pyplot as plt
         plt.show()

@@ -1,3 +1,43 @@
+"""
+Legacy CSV writers and readers for lmsiq summary tables, profiles and phase data.
+
+Purpose
+-------
+In earlier versions of ``lmsiq`` the per-wavelength results (SRP, EE at reference
+apertures, FWHM statistics), the EE / LSF profiles and the pixel-phase centroid tables
+were exchanged between processing stages through fixed-width CSV files.  This module
+holds those formats.  At HEAD the current flow (:mod:`lmsiq_cuber`) exchanges data by
+pickle instead, and none of these methods is called; ``lmsiq.main`` instantiates the
+class only for its side effect on ``summary_dict``.
+
+Belongs to the ``lmsiq`` program (legacy).
+
+Input data
+----------
+The CSV files this module itself wrote, under
+``../output/iq/<opticon>/<date_stamp>/<slice_subfolder>/<ipc_tag>/...``.
+
+Outputs
+-------
+CSV files:
+
+* ``<process_level>_summary_<ipc_tag>.csv`` (:meth:`Summariser.write_summary`);
+* ``<slice>_<ipc>_<level>_<type_tag>_wav_<config>.csv`` for the profile, centroid and
+  phase-data writers via :meth:`Summariser._get_results_path`.
+
+Notes
+-----
+* Bug: :meth:`Summariser._get_results_path` references ``Summariser.dataset_results_path``
+  and ``Summariser._get_folder``, neither of which exists on the class, so every
+  method that builds a path through it (``write_phase_data``, ``read_phase_data``,
+  ``write_centroids``, ``read_centroids``, ``write_profiles`` without ``set_path``,
+  ``read_profiles``) raises ``AttributeError``.  A working copy of the same function
+  exists as :meth:`lms_filer.Filer._get_results_path`.
+* Inconsistency: :meth:`Summariser.get_hdr_text` reads the third element of
+  ``summary_dict`` entries as ``unit`` but the units are only used when passed back
+  in explicitly by :meth:`create_summary_header`.
+* Clean-up: the whole module is dead code at HEAD; ``Filer`` is imported but unused.
+"""
 import os
 import numpy as np
 from lms_globals import Globals
@@ -6,6 +46,22 @@ from lms_filer import Filer
 
 
 class Summariser:
+    """
+    Fixed-width CSV formats for legacy lmsiq summary products.
+
+    Attributes
+    ----------
+    summary_dict : dict
+        ``column key -> (width, decimals, unit)`` for the summary table.  Populated
+        with the base columns at class level and extended per axis in ``Globals.axes``
+        (``'spectral'``, ``'spatial'``) by the constructor with EE reference / perfect /
+        design / mean and FWHM linear / Gaussian MC and error columns.
+
+    Notes
+    -----
+    * Clean-up: the constructor mutates the class-level dict, so repeated
+      instantiation is idempotent but order-dependent.
+    """
 
     summary_dict = {'wave': (10, 6, '(um)'), 'order': (6, 0, '-'),
                     'srp_mc_lin': (12, 0, '-'), 'srp_mc_lin_err': (15, 0, '-'),
@@ -13,6 +69,13 @@ class Summariser:
                     }
 
     def __init__(self):
+        """
+        Extend ``summary_dict`` with the per-axis EE and FWHM columns.
+
+        For each axis in ``Globals.axes`` the keys ``ee_<ax4>_ref/per/des/mean`` and
+        ``fwhm_<ax4>_lin_mc/lin_mc_err/gau_mc/gau_mc_err/lin_per/lin_des`` are added,
+        where ``<ax4>`` is the first four letters of the axis name.
+        """
         axes = Globals.axes
         for axis in axes:
             axis_tag = '_' + axis[0:4]
@@ -32,6 +95,19 @@ class Summariser:
 
     @staticmethod
     def get_value_text(key_value_pairs):
+        """
+        Format ``(key, value)`` pairs as one fixed-width CSV record fragment.
+
+        Parameters
+        ----------
+        key_value_pairs : iterable of (str, float)
+            Keys must be in ``summary_dict``; width and decimals come from there.
+
+        Returns
+        -------
+        text : str
+            Concatenated ``'{:>w.df},'`` fields.
+        """
         text = ''
         for kv_pair in key_value_pairs:
             key, value = kv_pair
@@ -42,6 +118,26 @@ class Summariser:
 
     @staticmethod
     def get_hdr_text(key, **kwargs):
+        """
+        Right-justified header cell for a summary column (key name or its unit).
+
+        Parameters
+        ----------
+        key : str
+            Column key in ``summary_dict``.
+        **kwargs
+            ``unit`` : str or None -- if given, print this instead of the key.
+
+        Returns
+        -------
+        text : str
+            ``'{:>w s},'`` with ``w`` the column width.
+
+        Notes
+        -----
+        * Clean-up: the local ``unit`` read from ``summary_dict`` shadows the keyword
+          after it has been used; ``val_fmt`` is assigned twice to the same value.
+        """
         unit = kwargs.get('unit', None)
         val, val_fmt = key, "{:d}"
         if unit is not None:
@@ -53,8 +149,23 @@ class Summariser:
 
     @staticmethod
     def create_summary_header(axes):
-        """ Create the header rows for the results_proc_detected summary file
-        (wavelength v parameter) as a string list.
+        """
+        Build the two header rows (column keys, then units) of the summary CSV.
+
+        Parameters
+        ----------
+        axes : list of str
+            Unused; the columns are taken from ``summary_dict`` as populated by the
+            constructor.
+
+        Returns
+        -------
+        headers : list of str
+            ``[keys_row, units_row]``.
+
+        Notes
+        -----
+        * Clean-up: ``axes`` parameter and ``dec`` local are unused.
         """
         hdr1, hdr2 = '', ''
         sd = Summariser.summary_dict
@@ -66,6 +177,29 @@ class Summariser:
 
     @staticmethod
     def write_summary(process_level, slice_subfolder, rows, iq_filer):
+        """
+        Write text rows to ``<output_folder>/<slice_subfolder><ipc_folder><level>_summary_<ipc_tag>.csv``.
+
+        Parameters
+        ----------
+        process_level : str
+            One of ``Globals.process_levels``.
+        slice_subfolder : str
+            Sub-folder name including trailing ``/``.
+        rows : list of str
+            Lines to write.
+        iq_filer : lms_filer.Filer
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Inconsistency: relies on ``Ipc.tag`` / ``Ipc.folder`` having been set by
+          :meth:`lms_ipc.Ipc.set_inter_pixel`; they are None otherwise and the string
+          concatenation raises ``TypeError``.
+        """
         summary_file_name = process_level + '_summary_' + Ipc.tag
         folder = iq_filer.output_folder + slice_subfolder + Ipc.folder
         folder = iq_filer.get_folder(folder)
@@ -77,6 +211,31 @@ class Summariser:
 
     @staticmethod
     def read_summary(process_level, slice_subfolder, iq_filer):
+        """
+        Read a summary CSV back into a column-index dictionary and a float array.
+
+        The first record gives the column names (lower-cased, left-stripped); the
+        second (units) is skipped; the remaining records are parsed as floats, with
+        tokens of length <= 1 left as zero.
+
+        Parameters
+        ----------
+        process_level : str
+        slice_subfolder : str
+        iq_filer : lms_filer.Filer
+
+        Returns
+        -------
+        profile_dict : dict or None
+            ``column name -> column index``; None if the file does not exist (a hint to
+            re-run ``lmsiq`` is printed).
+        profiles : ndarray, shape (n_rows, n_cols) or None
+
+        Notes
+        -----
+        * Inconsistency: the hint text refers to ``IPC = x.xxx`` and
+          ``'reanalyse = True'`` options that no longer exist in ``lmsiq.py``.
+        """
         summary_file_name = process_level + '_summary_' + Ipc.tag
         folder = iq_filer.output_folder + slice_subfolder + Ipc.folder
         folder = iq_filer.get_folder(folder)
@@ -107,6 +266,38 @@ class Summariser:
 
     @staticmethod
     def write_phase_data(data_type, data_id, det_shifts, data_block):
+        """
+        Write a (shift x model) table of phase-scan results to CSV.
+
+        Format: one header record ``dataset=,<..>,slice_folder=,<..>,n_mcruns=,<..>,
+        axis=,<..>,``; one column-label record ``Shift, Xcen_0000, Xcen_0001, ...``;
+        then one record per shift with ``{:10.3f}`` shift and ``{:16.6e}`` values.
+
+        Parameters
+        ----------
+        data_type : str
+            Key of the ``type_tags`` table in :meth:`_get_results_path` (e.g.
+            ``'xcentroids'``, ``'photometry'``).
+        data_id : tuple
+            ``(dataset, slice_folder, ipc_tag, process_level, config_tag,
+            n_mcruns_tag, axis)``.
+        det_shifts : ndarray, shape (n_shifts,)
+        data_block : ndarray, shape (n_shifts, n_runs)
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        AttributeError
+            From :meth:`_get_results_path` (module Notes).
+
+        Notes
+        -----
+        * Inconsistency: the header format string has four placeholders but the
+          column labels are always ``Xcen_`` regardless of ``data_type``.
+        """
 
         dataset, slice_folder, ipc_tag, process_level, config_tag, n_mcruns_tag, axis = data_id
         fmt = "dataset=,{:<16s},slice_folder=,{:<16s},n_mcruns=,{:<16s},axis=,{:<16s},"
@@ -137,7 +328,26 @@ class Summariser:
 
     @staticmethod
     def read_phase_data(data_type, data_id, n_runs):
-        """ Read data from file
+        """
+        Read a phase-scan CSV written by :meth:`write_phase_data`.
+
+        Parameters
+        ----------
+        data_type : str
+        data_id : tuple
+            See :meth:`write_phase_data`.
+        n_runs : int
+            Number of model columns to read (``n_runs + 1`` tokens including the shift).
+
+        Returns
+        -------
+        values : ndarray, shape (n_shifts, n_runs + 1)
+            Column 0 is the shift.
+
+        Raises
+        ------
+        AttributeError
+            From :meth:`_get_results_path` (module Notes).
         """
         path = Summariser._get_results_path(data_id, data_type)
         with open(path, 'r') as text_file:
@@ -157,6 +367,28 @@ class Summariser:
 
     @staticmethod
     def write_centroids(data_id, det_shifts, xcen_block):
+        """
+        Legacy: write a centroid-versus-shift table to ``..._cen...csv``.
+
+        Parameters
+        ----------
+        data_id : tuple
+            Five-element ``(dataset, folder_tag, config_tag, n_mcruns_tag, axis)``.
+        det_shifts : ndarray, shape (n_shifts,)
+        xcen_block : ndarray, shape (n_shifts, n_runs)
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Bug: unpacks a five-element ``data_id`` but then passes it to
+          :meth:`_get_results_path`, which unpacks seven elements
+          (``ValueError``), and ``'centroids'`` is not a key of that method's
+          ``type_tags`` (``KeyError``).  Dead code.
+        * Clean-up: ``tag = '_cen'`` is unused.
+        """
 
         dataset, folder_tag, config_tag, n_mcruns_tag, axis = data_id
         fmt = "{:>16s},{:>16s},{:>16s},{:>16s},{:>16s},{:>16s},"
@@ -189,6 +421,24 @@ class Summariser:
 
     @staticmethod
     def read_centroids(data_id, n_runs):
+        """
+        Legacy: read a centroid table and convert model columns to shifts relative to column 0.
+
+        Parameters
+        ----------
+        data_id : tuple
+        n_runs : int
+
+        Returns
+        -------
+        phase_shifts : ndarray, shape (n_shifts, n_runs + 1)
+            Column 0 unchanged; columns >= 1 have column 0 subtracted.
+
+        Notes
+        -----
+        * Bug: same ``_get_results_path`` / ``'centroids'`` key problems as
+          :meth:`write_centroids`.  Dead code.
+        """
         # Read data from file
         tag = '_cen'
         path = Summariser._get_results_path(data_id, 'centroids')
@@ -214,13 +464,40 @@ class Summariser:
 
     @staticmethod
     def write_profiles(data_type, data_id, xy_data, strehl_data, ipc_factor, **kwargs):
-        """ Write EE or LSF results_proc_detected to a csv file.
-        :param data_id:
-        :param xy_data:
-        :param strehl_data:
-        :param ipc_factor:
-        :param data_type:
-        :return:
+        """
+        Legacy: write an EE or LSF profile set (perfect, design, mean, rms, all MC) to CSV.
+
+        Record layout: ``Strehl=,<s>,+-,<err>,IPC factor=,<f>``; then
+        ``type=,<axis>,n_points=,<n>,n_files=,<m>,dataset=,<ds>_<cfg>,x_max=,<x>``; a
+        column-label record ``X/pix., perfect, design, Mean, RMS, 0000, 0001, ...``;
+        then one record per sample point.
+
+        Parameters
+        ----------
+        data_type : str
+            e.g. ``'ee_spectral'``, ``'lsf_spatial'`` (keys of ``type_tags``).
+        data_id : tuple
+            Seven-element identifier (see :meth:`write_phase_data`).
+        xy_data : tuple
+            ``(x, y_perfect, y_design, y_mean, y_rms, y_mcs)`` with ``y_mcs`` shape
+            (n_points, n_files).
+        strehl_data : tuple
+            ``(strehl, strehl_err)``.
+        ipc_factor : float
+        **kwargs
+            ``set_path`` : str or None -- explicit output path; if None the path comes
+            from :meth:`_get_results_path` (which fails, see module Notes).
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Inconsistency: ``x_max`` is taken from ``y_mean[-1]`` (the last *y* value),
+          not from ``x``.
+        * Inconsistency: the message says "Filer.write_profiles"; the method lives on
+          ``Summariser``.
         """
         set_path = kwargs.get('set_path', None)
 
@@ -266,6 +543,34 @@ class Summariser:
 
     @staticmethod
     def read_profiles(data_id, profile_type):
+        """
+        Legacy: read a profile CSV written by :meth:`write_profiles`.
+
+        Parameters
+        ----------
+        data_id : tuple
+            Seven-element identifier.
+        profile_type : str
+            ``data_type`` used when writing.
+
+        Returns
+        -------
+        xy_data : tuple
+            ``(axis, x, y_perfect, y_design, y_mean, y_rms, y_mcs)`` -- the layout
+            expected by :meth:`lmsiq_analyse.Analyse.find_ee_axis_references`.
+        strehl_data : tuple
+            ``(strehl, strehl_err)``.
+        ipc_factor : float
+
+        Raises
+        ------
+        AttributeError
+            From :meth:`_get_results_path` (module Notes).
+
+        Notes
+        -----
+        * Clean-up: ``tag`` is built and unused; commented debug prints remain.
+        """
         # Read data from file
         dataset, slice_folder, ipc_tag, process_level, config_tag, n_mcruns_tag, axis = data_id
         tag = "_{:s}_{:s}".format(profile_type, axis)
@@ -307,6 +612,39 @@ class Summariser:
 
     @staticmethod
     def _get_results_path(data_id, data_type):
+        """
+        Legacy: build the CSV path ``<results>/<slice>/<ipc>/<level>/<type>/<name>.csv``.
+
+        File name: ``<slice_tag>_<ipc_tag>_<process_level><type_tag>_wav_<config_tag>.csv``
+        with ``type_tag`` from a fixed table (``'xcentroids' -> '_xcen'``,
+        ``'ee_spectral' -> '_eex'``, ``'lsf_dfp_spatial' -> '_lsy_dfp'`` ...).
+
+        Parameters
+        ----------
+        data_id : tuple
+            ``(dataset, slice_subfolder, ipc_tag, process_level, config_folder,
+            mcrun_tag, axis)``.
+        data_type : str
+            Key of the ``type_tags`` table.
+
+        Returns
+        -------
+        path : str
+
+        Raises
+        ------
+        AttributeError
+            ``Summariser.dataset_results_path`` and ``Summariser._get_folder`` do not
+            exist.
+
+        Notes
+        -----
+        * Bug: see Raises; the method (and everything that calls it) cannot run.
+          :meth:`lms_filer.Filer._get_results_path` is the working equivalent using
+          ``self.output_folder`` and ``Filer.get_folder``.
+        * Clean-up: ``type_folder`` is computed and unused; the final ``os.mkdir``
+          duplicates what the (missing) ``_get_folder`` would do.
+        """
         dataset, slice_subfolder, ipc_tag, process_level, config_folder, mcrun_tag, axis = data_id
 
         slice_folder = Summariser._get_folder(Summariser.dataset_results_path + '/' + slice_subfolder)

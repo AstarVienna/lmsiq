@@ -1,25 +1,144 @@
+"""
+Catalogue and loader for Zemax PSF image stacks used by the ``lmsiq`` program.
+
+Purpose
+-------
+:class:`ImageManager` scans the Zemax data tree once (:meth:`ImageManager.make_dictionary`),
+decoding configuration, field and defocus numbers from folder names, wavelength and
+grating parameters from the per-folder ``.txt`` file, and slice / spectral-IFU / Monte-Carlo
+numbers from the FITS file names.  :meth:`ImageManager.load_dataset` then returns, for one
+(configuration, field, focus, slice, spifu) selection, the ordered list of model images
+[perfect, as-designed, MC_lo .. MC_hi] together with a flat ``ds_dict`` of the selection's
+parameters.  All results are held in class attributes.
+
+Input data
+----------
+``../data/iq/<opticon>/<date_stamp>/`` (``iq_filer.psf_folder``), containing one
+sub-folder per Zemax configuration.  Folder names carry ``config<nnn>``, ``field<nnn>``
+and optionally ``defoc<nnn>`` (three digits after each code; ``rfind`` is used, so the
+code may appear anywhere).  Each folder holds:
+
+* one ``.txt`` parameter file, colon-separated ``key: value`` lines with keys
+  ``wavelength`` (um), ``prism angle`` (deg), ``grating angle`` (deg), ``grating order``
+  and ``Pixel size (micron)``; spectral-IFU data sets omit the grating keys and receive
+  defaults ``prism_angle = 7.0``, ``grating_angle = 0.0``, ``grating_order = -99``;
+* FITS files ``<folder>_spat<ss>_spec<p>_det<tag>.fits`` (image in the primary HDU,
+  128 x 128 pixels at 4.5 um = 4x oversampled 18 um H2RG pixels) where ``spat`` is
+  followed by a 2-digit spatial slice number, ``spec`` by a 1-digit spectral-IFU slice
+  number and ``det`` by ``perf`` (perfect model), ``desi`` (as-designed) or a 4-digit
+  Monte-Carlo instance number; files containing ``sli`` (slicer-plane images) are
+  ignored.
+
+No FITS header keywords are read; all metadata come from names and the ``.txt`` file.
+
+Outputs
+-------
+None written to disk.
+
+Notes
+-----
+* Inconsistency: ``im_pix_size`` is hard-coded to 4.5 um before the parameter file is
+  read; the file's ``Pixel size (micron)`` overrides it only if present.
+* Inconsistency: the folder-code loop appends to ``config_nos``, ``field_nos`` and
+  ``focus_shifts`` independently, so if any folder lacks a code (e.g. no ``defoc``)
+  the lists have different lengths and :meth:`load_dataset` indexes them with a common
+  ``dataset_idx``; ``field_no = config_dict['field_nos'][-1]`` also assumes every folder
+  has a ``field`` code.
+* Bug: :meth:`load_dataset` computes ``n_mcs = mc_bounds[1] - mc_bounds[0] + 3``
+  unconditionally, so ``mc_bounds = None`` (perfect + design only) raises ``TypeError``
+  despite the ``if mc_bounds is not None`` guard just above.
+* Clean-up: about 130 lines of the previous ``make_dictionary_old`` are kept as a
+  comment block; ``_find_new_zemax_parameters`` and ``_make_inc_tags`` are unused
+  legacy; the ``'field position'`` branch of ``_read_param_file`` is unreachable.
+* Open question: a comment notes "the slice number information is wrong in the new
+  zemax format (since start of 2024)"; which quantity is wrong and how it is
+  compensated is not recorded.
+"""
 import numpy as np
 from astropy.io import fits
 
 
 class ImageManager:
+    """
+    Static catalogue of a Zemax PSF data set and loader for individual model stacks.
+
+    Attributes
+    ----------
+    model_dict : dict or None
+        Data-set-wide values: ``'optical_path'``, ``'im_pix_size'`` (um),
+        ``'fits_trailer'`` (always None), ``'mc_bounds'`` (``(lo, hi)`` or None).
+    config_dict : dict or None
+        Per-folder lists: ``'folders'``, ``'config_nos'``, ``'field_nos'``,
+        ``'focus_shifts'``, ``'slice_tgts'``, ``'slice_nos'`` (list of lists),
+        ``'spifu_nos'`` (list of lists), ``'wavelengths'``, ``'prism_angles'``,
+        ``'grating_angles'``, ``'grating_orders'``.
+    unique_parameters : dict or None
+        For each ``config_dict`` key, the list of distinct values (flattened for the
+        list-of-lists keys).
+    is_new_zemax : None
+        Legacy flag, never set.
+
+    Notes
+    -----
+    * Clean-up: state is class-level, so two data sets cannot be open at once.
+    """
     model_dict, config_dict = None, None
     unique_parameters = None
     is_new_zemax = None
 
     def __init__(self):
+        """No-op constructor; call :meth:`make_dictionary` to populate the class."""
         return
 
     @staticmethod
     def make_dictionary(data_identifier, iq_filer):
-        """ Make the image table dictionary which describes all data for this model as a dictionary object
-        (config_dict) which has a single entry for each folder/configuration in the model data.  Within a
-        folder there are multiple files ('perfect', 'design' and M-C instances) and may be multiple field
-        positions, spatial and spectral slices, so these are stored as lists.  A 'dataset' is then defined
-        as the unique set of files for a single value of all these parameters,
-        eg, folder/config_a, field_b, spat_slice_c, spec_slice_d.
-        Method 'load_dataset' then returns the images plus a dictionary (obs_dict) containing the single
-        values corresponding to the selected data.
+        """
+        Scan the PSF folder tree and populate ``model_dict``, ``config_dict`` and ``unique_parameters``.
+
+        For each sub-folder of ``iq_filer.psf_folder`` (excluding names containing
+        ``.csv``):
+
+        1. Decode ``config``, ``field`` and ``defoc`` codes (3 digits after the code)
+           into ``config_nos``, ``field_nos``, ``focus_shifts``.
+        2. Look up the target slice for the field in
+           ``data_identifier['field_tgt_slice']``; set ``optical_path`` and the default
+           ``im_pix_size = 4.5``.
+        3. Read the first ``.txt`` file with :meth:`_read_param_file`; keys present in
+           ``model_dict`` overwrite it, keys whose plural is in ``config_dict`` are
+           appended there, others are reported.
+        4. List the ``.fits`` files (excluding ``.txt`` and ``sli``); collect distinct
+           ``spat`` (2-digit) and ``spec`` (1-digit) numbers, and for files that are
+           neither ``desi`` nor ``perf`` the 4-digit number after ``det`` as an MC
+           instance.  ``mc_bounds`` becomes ``(min, max)`` of all MC numbers seen.
+        5. :meth:`_find_unique_parameters` builds ``unique_parameters``.
+
+        Parameters
+        ----------
+        data_identifier : dict
+            Needs ``'field_tgt_slice'`` (field number -> target slice) and
+            ``'optical_path'``.
+        iq_filer : lms_filer.Filer
+            Configured ``'iq'`` Filer; ``psf_folder`` and ``get_file_list`` are used.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        IndexError
+            If a folder contains no ``.txt`` file (a message is printed first) or lacks
+            a ``field`` code.
+        KeyError
+            If a decoded field number is missing from ``field_tgt_slice``.
+
+        Notes
+        -----
+        * Inconsistency: ``mc_bounds`` is the overall min/max across *all* folders; a
+          folder with fewer MC instances will make :meth:`load_dataset` look for
+          missing files.
+        * Inconsistency: ``focus_shifts`` receives entries only from folders with a
+          ``defoc`` code (see module Notes on list alignment).
         """
         model_dict = {'optical_path': None, 'im_pix_size': None,
                       'fits_trailer': None, 'mc_bounds': None,
@@ -261,6 +380,29 @@ class ImageManager:
 
     @staticmethod
     def _find_new_zemax_parameters(config_no, optical_configuration, date_stamp):
+        """
+        Legacy: infer spatial / spectral slice numbers from the configuration number.
+
+        Valid only for date stamps ``20240209``, ``20240229``, ``20240305``: nominal
+        ``spat = 12 + (config_no - 1) % 3``; spifu ``spat = 12 + (config_no - 1) % 6``,
+        ``spec = (config_no - 1) % 3``.
+
+        Parameters
+        ----------
+        config_no : int
+        optical_configuration : {'nominal', 'spifu'}
+        date_stamp : str
+
+        Returns
+        -------
+        spat_slice_no : int or None
+        spec_slice_no : int or None
+            -1 where not applicable; ``(None, None)`` for an unsupported date stamp.
+
+        Notes
+        -----
+        * Clean-up: unused at HEAD; slice numbers now come from file names.
+        """
         if date_stamp not in ['20240209', '20240229', '20240305']:
             print("ImageManager._find_new_zemax_parameters - NOT VALID FOR {:s}".format(date_stamp))
             return None, None
@@ -275,6 +417,21 @@ class ImageManager:
 
     @staticmethod
     def _find_unique_parameters(image_table):
+        """
+        Build ``ImageManager.unique_parameters``: distinct values per ``config_dict`` key.
+
+        ``'slice_nos'`` and ``'spifu_nos'`` are lists of lists and are flattened; order
+        of first appearance is kept (no sorting).
+
+        Parameters
+        ----------
+        image_table : dict
+            The ``config_dict``.
+
+        Returns
+        -------
+        None
+        """
         uni_par = {}
         for key in image_table:
             uni_par[key] = []
@@ -294,6 +451,36 @@ class ImageManager:
 
     @staticmethod
     def _read_param_file(path):
+        """
+        Parse a Zemax ``.txt`` parameter file into a dictionary.
+
+        Lines of the form ``key: value`` are matched against
+        ``{'wavelength': 'wavelength' (float), 'prism angle': 'prism_angle' (float),
+        'grating angle': 'grating_angle' (float), 'grating order': 'grating_order'
+        (int), 'Pixel size (micron)': 'im_pix_size' (float)}``; other keys are ignored.
+        Defaults ``prism_angle = 7.0``, ``grating_angle = 0.0``, ``grating_order = -99``
+        are set first so that spectral-IFU files, which lack the grating keys, still
+        yield complete dictionaries.
+
+        Parameters
+        ----------
+        path : str
+            Path to the ``.txt`` file.
+
+        Returns
+        -------
+        params : dict
+            Keys as above (``wavelength`` in um, angles in degrees).
+
+        Notes
+        -----
+        * Clean-up: the ``'field position'`` branch (``[x, y]`` vs integer formats) is
+          dead code because ``'field position'`` is not in ``param_translator`` and
+          is skipped by the ``continue`` above it; the ``'2fl_2fl'`` and ``'str_str'``
+          formats are therefore never used.
+        * Open question: a value that cannot be parsed (e.g. an empty string) raises
+          ``ValueError``; there is no error handling.
+        """
         params = {}
         pf = open(path, 'r')
         lines = pf.read().splitlines()
@@ -344,7 +531,23 @@ class ImageManager:
 
     @staticmethod
     def read_zemax_image(path):
-        """ Read in a model zemax image """
+        """
+        Read the primary-HDU image of a Zemax FITS file as a new array.
+
+        Parameters
+        ----------
+        path : str
+
+        Returns
+        -------
+        image : ndarray
+            Copy of the primary HDU data (128 x 128 for the standard PSFs).
+
+        Notes
+        -----
+        * Clean-up: the HDU list is not closed; :meth:`load_dataset` duplicates this
+          code inline rather than calling it.
+        """
         hdu_list = fits.open(path, mode='readonly')
         hdu = hdu_list[0]
         image_in = hdu.data
@@ -353,7 +556,76 @@ class ImageManager:
 
     @staticmethod
     def load_dataset(iq_filer, selection, **kwargs):
-        """ Load a data (sub-)set (perfect, design plus MC images).
+        """
+        Load the [perfect, design, MC..] image stack for one selection.
+
+        Algorithm:
+
+        1. For each key of ``selection`` find the ``config_dict`` keys that *contain*
+           it as a substring (``'slice_no'`` matches ``'slice_nos'`` but also
+           ``'field_no'`` matches ``'field_nos'`` etc.) and collect the folder indices
+           whose value equals (or, for list-valued entries, contains) the selection
+           value.  Intersect the index lists over all keys; exactly one folder index
+           must remain, otherwise ``(None, None)`` is returned.
+        2. Build ``ds_dict`` from that folder: every ``config_dict`` key with its final
+           ``'s'`` stripped, the requested ``slice_no`` / ``spifu_no`` (looked up in the
+           folder's lists), all ``model_dict`` entries, and all ``kwargs``.
+        3. ``obs_tag = '<folder>_spat<ss>_spec<p>_det'``; model tags are ``['perf',
+           'desi']`` plus ``'%04d' % n`` for ``n`` in ``mc_bounds``.
+        4. Check the folder file count against ``n_slices * n_spifus * (n_mc + 2) + 1``
+           (one ``.txt``); print a warning if different.
+        5. For each tag, list files containing ``[tag, obs_tag, '.fits']`` and not
+           ``'sli'``, warn if not exactly one, and read the primary HDU of the first.
+           If ``xy_shift = (sampling, dr, dc)`` is given, the image is super-sampled by
+           ``sampling`` (block replication), rolled by ``(dr, dc)`` super-pixels with
+           ``np.roll`` (wrap-around) and block-averaged back.
+
+        Parameters
+        ----------
+        iq_filer : lms_filer.Filer
+            ``psf_folder`` and ``get_file_list`` are used.
+        selection : dict
+            Must contain ``'slice_no'``, ``'spifu_no'``, ``'mc_bounds'`` and the folder
+            selectors (``'config_no'``, ``'field_no'``, ``'focus_shift'``; ``Cuber``
+            also passes ``'focal_plane'``, which matches no ``config_dict`` key and is
+            ignored).
+        **kwargs
+            ``debug`` : bool, default False.
+            ``xy_shift`` : tuple ``(sampling, dr, dc)`` or None.
+            Every kwarg is also copied into ``ds_dict``.
+
+        Returns
+        -------
+        images : list of ndarray or None
+            ``[perfect, design, MC_lo, ..., MC_hi]`` images; None if the selection is
+            not unique.
+        ds_dict : dict or None
+            Selection parameters plus ``'file_names'`` (list, same order as
+            ``images``).
+
+        Raises
+        ------
+        TypeError
+            If ``selection['mc_bounds']`` is None (``n_mcs`` arithmetic).
+        IndexError
+            If no file matches a tag (a message is printed, then ``file_list[0]``
+            fails).
+
+        Notes
+        -----
+        * Bug: ``n_mcs = mc_bounds[1] - mc_bounds[0] + 3`` is evaluated even when
+          ``mc_bounds`` is None (module Notes).
+        * Inconsistency: substring matching in step 1 means a selection key such as
+          ``'no'`` would match several ``config_dict`` keys; the current keys happen to
+          be unambiguous.
+        * Inconsistency: ``mc_bounds`` in ``ds_dict`` comes from ``model_dict`` (the
+          folder scan) rather than from ``selection``; the two can differ when
+          ``lmsiq.main`` overrides the bounds.
+        * Clean-up: the ``xy_shift`` path is two pure-Python double loops over
+          ``sampling^2 * n_pix`` elements; ``np.repeat`` / ``reshape().mean()`` would
+          be equivalent.  It is commented out in every caller.
+        * Clean-up: ``kwargs`` (``debug``, ``xy_shift``) leak into ``ds_dict`` and from
+          there into the pickled ``field_series``.
         """
         model_dict = ImageManager.model_dict
         config_dict = ImageManager.config_dict
@@ -501,6 +773,25 @@ class ImageManager:
 
     @staticmethod
     def _make_inc_tags(config_no, slice_no, mc_tag):
+        """
+        Legacy: build file-name inclusion tags for the old Zemax naming scheme.
+
+        Parameters
+        ----------
+        config_no : int
+        slice_no : int
+        mc_tag : str
+
+        Returns
+        -------
+        inc_tags : list of str
+            ``['.fits', '<cc>_<ss><mc_tag>']`` or, if ``is_new_zemax``,
+            ``['.fits', '_<cc+1>']``.
+
+        Notes
+        -----
+        * Clean-up: unused at HEAD; ``is_new_zemax`` is never set.
+        """
         inc_tags = ['.fits']
         fmt = "{:02d}_{:02d}{:s}"
         id_tag = fmt.format(config_no, slice_no, mc_tag)

@@ -1,3 +1,49 @@
+"""
+Pixel-phase study: sensitivity of centroid, FWHM and photometry to sub-pixel PSF shifts.
+
+Purpose
+-------
+:meth:`Phase.process` takes the model PSF images of one slice, shifts each by a grid of
+sub-pixel offsets along the spectral (column) axis, applies the detector diffusion / IPC
+model and down-samples to detector pixels, then measures the fitted x and y centroid,
+the x FWHM and the total signal at every shift.  The variation of these quantities with
+pixel phase is plotted per (configuration, field).  It quantifies how much the
+detector sampling alone modulates line centroids and photometry.
+
+Belongs to the ``lmsiq`` program; run from :func:`lmsiq.main` when
+``process_phase_data`` is True (default False).
+
+Input data
+----------
+Zemax PSF stacks via :class:`lmsiq_image_manager.ImageManager` from
+``../data/iq/<opticon>/<date_stamp>/`` (128 x 128 pixels at 4.5 um = 4x oversampled 18
+um H2RG pixels; file naming as described in :mod:`lmsiq_image_manager`).
+
+Outputs
+-------
+PNG plots in ``../output/iq/<opticon>/<date_stamp>/phase/`` named
+``<xcentroids|ycentroids|photometry|xfwhm>_<ipc>_<cc>_field<ff>_tgt_slice<ss>_spifu_<pp>.png``
+via :meth:`lmsiq_plot.Plot.phase_shift`.  No numeric results are written.
+
+Notes
+-----
+* Bug: :meth:`Phase.sub_pixel_shift` discards the return value of ``np.moveaxis``, so
+  the intended transpose for ``axis == 'spectral'`` never happens and the shift is
+  always applied along columns (axis 1).
+* Inconsistency: ``tgt_slice_no`` is read from ``data_identifier['field_tgt_slice']``
+  (a dict) and then overwritten with the constant 13; ``slice_nos`` and ``spifu_nos``
+  are likewise forced to ``[13]`` and ``[1]``.
+* Inconsistency: only the first four models (``image_list[0:4]`` = perfect, design,
+  MC_lo, MC_lo+1) are processed, but the result arrays are sized for all models, so
+  columns 4.. stay zero and :meth:`lmsiq_plot.Plot.phase_shift` divides by a zero mean
+  for them.
+* Inconsistency: the y-centroid fit uses ``Analyse.find_fwhm(im_det, oversample=4)`` on
+  an already down-sampled image, so its FWHM/centroid are in units of 1/4 detector pixel
+  and the collapse band is 4x wider than intended.
+* Clean-up: ``xcen_obs``, ``xcen_obs_rms``, ``ycen_obs``, ``xfwhm_obs``, ``phot_obs``,
+  ``phot_obs_rms``, ``waves`` and ``dataset_indices`` are filled but never used or
+  returned; the ``plot_level`` kwarg passed by ``lmsiq.main`` is ignored.
+"""
 import numpy as np
 import time
 from lms_detector import Detector
@@ -8,14 +54,80 @@ from lmsdist_util import Util
 
 
 class Phase:
+    """
+    Namespace for the sub-pixel phase-shift analysis.
+
+    Notes
+    -----
+    * Clean-up: the class holds no state.
+    """
 
     def __init__(self):
+        """No-op constructor."""
         return
 
     @staticmethod
     def process(data_identifier, process_control, iq_filer, image_manager, **kwargs):
-        """ Read in a Zemax image data set and generate images sampled at the detector with
-        or without intra-pixel diffusion applied.
+        """
+        Run the phase-shift scan and plot centroid, FWHM and photometry variations.
+
+        Flow:
+
+        1. Shift grid ``det_shifts = arange(-1.0, 1.1, 0.1)`` detector pixels (21
+           steps); target slice fixed to 13, spifu slice to 1.
+        2. For each ``inter_pixel`` in ``process_control[1]`` (``Ipc.set_inter_pixel``),
+           configuration and field: load the model stack with
+           :meth:`lmsiq_image_manager.ImageManager.load_dataset`.
+        3. For each of the first four models and each shift:
+           ``im_shift = det_shift * oversampling`` image pixels;
+           :meth:`sub_pixel_shift` (``resolution=50``); :meth:`lms_ipc.Ipc.apply` if
+           ``inter_pixel``; :meth:`lms_detector.Detector.down_sample`.  For the first
+           data set and model index 2 only, a 3-pane illustration (Zemax image, with
+           diffusion, sampled) is shown.
+        4. Measure ``Analyse.find_fwhm(im_ipc, oversample=4, axis=0)`` and
+           ``find_fwhm(im_det, oversample=1, axis=0)`` for the x centroid / FWHM in
+           detector pixels, ``find_fwhm(im_det, oversample=4, axis=1)`` for the y
+           centroid, and ``Analyse.find_phot(im_det, method='full_image')`` for the
+           total signal.  Store ``xcen_det - det_shift`` (residual after removing the
+           applied shift), ``ycen``, ``xfwhm_det`` and ``phot``.
+        5. Plot the four ``(n_shifts, n_models)`` arrays with
+           :meth:`lmsiq_plot.Plot.phase_shift` to ``<output_folder>/phase/``.
+
+        Parameters
+        ----------
+        data_identifier : dict
+            ``'field_tgt_slice'`` and ``'slice_radius'`` are read (then overridden).
+        process_control : tuple
+            ``(mc_bounds, inter_pixels)``.
+        iq_filer : lms_filer.Filer
+            ``model_configuration`` (for the date stamp), ``output_folder``,
+            ``get_folder``.
+        image_manager : lmsiq_image_manager.ImageManager
+        **kwargs
+            ``config_nos`` : list of int or None -- default all configurations.
+            ``field_nos`` : list of int or None -- default all fields.
+            Other keywords (``plot_level``) are ignored.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        * Bug: the ``det_shift += det_shift_increment`` at the end of the shift loop
+          rebinds the loop variable and has no effect.
+        * Bug: ``ds_dict['mc_bounds']`` is unpacked as ``(mc_start, mc_end)``; it is
+          None when the data set has no MC instances.
+        * Inconsistency: ``lmsiq.main`` passes ``config_nos=[0]``; whether a
+          configuration 0 exists depends on the folder naming (configurations decoded
+          from ``config<nnn>`` codes are normally >= 1), in which case
+          ``load_dataset`` returns None and the following ``ds_dict['im_pix_size']``
+          raises ``TypeError``.
+        * Inconsistency: the ``Plot.images`` illustration has its ``png_path`` commented
+          out, so it is only shown interactively.
+        * Clean-up: ``ycen_obs``, ``xcen_obs`` etc. are normalised by their means but
+          never used; the ``phase_plots`` arrays passed to the plotter are the raw
+          (un-normalised) shift arrays, which ``Plot.phase_shift`` normalises again.
         """
         field_nos = kwargs.get('field_nos', None)
         config_nos = kwargs.get('config_nos', None)
@@ -191,6 +303,47 @@ class Phase:
 
     @staticmethod
     def sub_pixel_shift(image, axis, sp_shift, **kwargs):
+        """
+        Shift an image along its columns by a fractional pixel amount via super-sampling.
+
+        Algorithm: copy the input; build a super-sampled image with ``resolution``
+        sub-columns per column; write each input column into sub-columns
+        ``[col * res + shift, col * res + shift + res)`` where
+        ``shift = round(sp_shift * res)``, clipping at the array edges (data shifted
+        out are lost, vacated sub-columns stay zero); then average every ``res``
+        sub-columns back to one output column.
+
+        Parameters
+        ----------
+        image : ndarray, shape (n_rows, n_cols)
+            Not modified.
+        axis : str
+            ``'spectral'`` is intended to select the row axis by transposing; see
+            Notes -- in practice the shift is always along columns.
+        sp_shift : float
+            Shift in image pixels (positive -> towards higher column index).
+        **kwargs
+            ``debug`` : bool.
+            ``resolution`` : int, default 10 -- sub-pixels per pixel (50 in
+            :meth:`process`).
+
+        Returns
+        -------
+        image_out : ndarray, shape (n_rows, n_cols)
+
+        Notes
+        -----
+        * Bug: ``np.moveaxis(image_in, 0, 1)`` returns a view that is discarded
+          (twice), so the 'spectral' transpose has no effect.  Because the spectral
+          direction of the Zemax images is the column axis (see
+          :meth:`lmsiq_analyse.Analyse.lsf`, ``axis=0``), the shift nevertheless lands
+          on the intended axis.
+        * Inconsistency: the upper clip ``c2 = ncols_ss - 1`` drops the last
+          sub-column when the shifted block reaches the edge.
+        * Clean-up: two Python loops over columns per call; ``np.roll`` on the
+          super-sampled array (as in ``ImageManager.load_dataset``'s ``xy_shift``) or
+          ``scipy.ndimage.shift`` would be equivalent apart from the edge handling.
+        """
         debug = kwargs.get('debug', False)
         resolution = kwargs.get('resolution', 10)       # Number of sub-pixels per image pixel
 

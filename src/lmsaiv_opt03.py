@@ -1,10 +1,49 @@
 #!/usr/bin/env python
 """
-Decorators for use in all LMS projects.  Currently just includes @debug
+LMS-OPT-03 analysis stub: monochromatic point / line spread function (lmsaiv program).
+
+Registered as 'lms_opt_03_psf' -> ``Opt03.psf`` in
+``lmsaiv_opt_tests.OptTests`` with the title 'Monochomatic Point and line
+spread function'.  As committed the module is non-functional: it is a
+partial copy of an early version of the LMS-OPT-01 flood analysis (dark
+statistics, legacy ``flood_stats`` slice map, approximate relative
+response) written for the pre-``Mosaic`` tuple layout, and no PSF or LSF
+measurement is implemented.
+
+**Input data (as written)**: FITS mosaics tagged [test_name, 'nom_dark']
+and [test_name, 'flood'] in ``Filer.test_data_folder``; header keywords
+'HIERARCH ESO INS WLEN CEN', 'X_CEN', 'X_SIZE', 'Y_SIZE',
+'HIERARCH pixel_size'.
+
+**Output**: intended ``as_built['slice_map']`` and a relative response
+plot.  In practice the method raises before producing anything.
+
+Notes
+-----
+- Inconsistency: ``psf(test_name, title, as_built, **kwargs)`` does not
+  match the ``method(title, as_built, **kwargs)`` call in
+  ``OptTests.run`` (TypeError: missing 'as_built').
+- Bug: ``Filer.read_mosaic_list(inc_tags)`` passes one positional
+  argument where ``(folder, inc_tags)`` is required (IndexError on
+  ``args[0]`` inside ``read_mosaic_list``), and
+  ``Filer.read_mosaic_list(inc_tags=[...])`` uses a keyword the function
+  does not accept (TypeError).
+- Bug: ``OptTools.flood_stats`` does not exist (the legacy routine is
+  ``lmsaiv_opt01.Opt01.flood_stats``).
+- Bug: ``u`` (astropy.units) and ``Model`` (lmssim_model) are used but not
+  imported.
+- Bug: keywords 'X_SIZE', 'Y_SIZE' and 'HIERARCH pixel_size' are not
+  written by ``lmssim_toy`` (which writes 'X_CEN', 'Y_CEN' and
+  'HIERARCH AIT PIXEL_PITCH').
+- Inconsistency: file tag 'flood' does not match the 'flat_bb' naming of
+  ``lms_obs_map``; tuple unpacking of mosaics is incompatible with
+  ``lms_mosaic.Mosaic``; ``as_built['slice_map']`` differs from the
+  ``slice_map_...`` keys used by LMS-OPT-01 / LMS-OPT-02.
+- Open question: LMS-OPT-03 needs laser + single-pinhole frames
+  (``lms_obs_map`` tag ``las_psf_``) and a PSF / LSF centroid-and-width
+  measurement; none of that exists yet.
 
 @author: Alistair Glasse
-
-Update:
 """
 import math
 
@@ -15,13 +54,45 @@ from lms_filer import Filer
 
 
 class Opt03:
+    """LMS-OPT-03 point / line spread function analysis (stub, non-functional)."""
 
     def __init__(self):
+        """Do nothing; all methods are static."""
         return
 
     @staticmethod
     def psf(test_name, title, as_built, **kwargs):
-        """ Analysis of laser + single pinhole data to characterise the mochromatic point source.
+        """Intended LMS-OPT-03 analysis of laser + single-pinhole data (does not run).
+
+        As written: read the darks, print ``OptTools.dark_stats``, plot them,
+        then for each 'flood' mosaic compute the legacy slice map with
+        ``OptTools.flood_stats`` (non-existent) and a 1000 K black-body relative
+        response with the same approximate 0.08 um dispersion as
+        ``lmsaiv_opt01.Opt01._find_rrf``.
+
+        Parameters
+        ----------
+        test_name : str
+            File-name tag (e.g. 'lms_opt_03').  Not supplied by ``OptTests.run``.
+        title : str
+            Plot title.
+        as_built : dict
+            'As built' dictionary; would receive 'slice_map'.
+        **kwargs
+            ``do_plot`` : bool, default True (later overwritten by a hard-coded
+            True).
+
+        Returns
+        -------
+        dict
+            ``as_built`` (never reached).
+
+        Notes
+        -----
+        - See the module notes for the list of defects; the first statement,
+          ``Filer.read_mosaic_list(inc_tags)``, already fails with IndexError
+          inside ``read_mosaic_list`` (``args[0]`` on an empty ``args``).
+        - Clean-up: the hard-coded ``do_plot = True`` overrides the keyword.
         """
         inc_tags = [test_name, 'nom_dark']
         darks = Filer.read_mosaic_list(inc_tags)
@@ -77,7 +148,28 @@ class Opt03:
 
     @staticmethod
     def _parse_abo(file_name):
-        """ Extract alpha, beta and observation number from a fits file name.  Used in lms_opt_01_t2
+        """Parse alpha, beta and observation number from a legacy '_grid' file name.
+
+        Searches for '_grid' and then the tags '_a', '_b' and '_o'; the first two
+        are signed ('p' / 'n' followed by three digits), the last unsigned.
+
+        Parameters
+        ----------
+        file_name : str
+            File name such as '..._grid_ap100_bn050_o001.fits'.
+
+        Returns
+        -------
+        tuple of float
+            ``(alpha, beta, obs_no)``.
+
+        Notes
+        -----
+        - Inconsistency: current file names from ``lms_obs_map`` use
+          'bb_iso_alpha_a{p|n}NNN_b{p|n}NNN' with no '_grid' or '_o' tags, so
+          ``str.find`` returns -1 and the parse is meaningless for them.
+        - Clean-up: duplicated verbatim in ``lmsaiv_opt01.Opt01._parse_abo`` and
+          ``lmsaiv_opt03.Opt03._parse_abo``; neither copy is called.
         """
         signed = {'_a': True, '_b': True, '_o': False}
         ip = file_name.find('_grid') + 5        # Get start position of wavelength, alpha and beta sub strings

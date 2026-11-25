@@ -1,13 +1,124 @@
 #!/usr/bin/env python
-""" Program to generate transform which map coordinates between the LMS entrance focal plane
-EFP_w, wavelength,
-EFP_x, along slice position (mm)
-EFP_y, across slice position,
-and detector focal plane
-DET_NO, detector number (slices 1 to 14 fall on detectors 3 and 4, 15 to 28 on dets 1 and 2, and
-                         1,2 image the short wavelengths)
-DFP_x, along row position
-DFP_y, along row position
+"""``lmsdist`` -- fit the METIS LMS distortion transforms from Zemax ray traces and write them to FITS.
+
+Purpose
+-------
+Top-level program of the ``lmsdist`` chain (README: "Generate LMS distortion
+transforms as described in E-TNT-ATC-MET-1058 from ray coordinates in key
+focal planes").  For every LMS opto-mechanical configuration (prism angle,
+echelle angle) for which a Zemax ray trace exists it
+
+1. fits, per slice and echelle order, the 4 x 4 polynomial matrices
+   ``A, B`` (EFP -> MFP) and ``AI, BI`` (MFP -> EFP) by SVD least squares
+   (``lmsdist_trace.RayTrace.create_svd_transforms`` ->
+   ``lmsdist_util.Util.solve_svd_distortion``);
+2. back-projects the detector edges to find each slice's wavelength range
+   (``RayTrace.find_wavelength_bounds``);
+3. writes the transforms to FITS and pickles the traces;
+4. fits the configuration dependence: prism angle versus wavelength at
+   echelle angle zero, ``n*lambda`` versus (prism, echelle) angle, and every
+   matrix term versus (prism, echelle) angle (``lmsdist_polyfit.PolyFit``);
+5. evaluates the fitted transforms against the ray traces and tests the
+   wavelength -> configuration inversion (``PolyFit.wave_to_config``).
+
+Coordinate systems
+------------------
+- EFP (entrance focal plane): ``efp_w`` wavelength (um), ``efp_x`` along-slice
+  position (mm, alpha), ``efp_y`` across-slice position (mm, beta).
+- MFP (detector mosaic focal plane): ``mfp_x``, ``mfp_y`` (mm); ``mfp_x``
+  increases towards shorter wavelength.
+- DFP (detector focal plane): ``det_no`` 1..4, ``dfp_x`` column, ``dfp_y`` row
+  (pixels).  Slices 1-14 fall on detectors 3 and 4, slices 15-28 on detectors
+  1 and 2; detectors 1 and 3 image the shorter wavelengths.
+
+Input data (NOT in the repository)
+----------------------------------
+Zemax ray-trace CSV files in ``../data/distortion/<opticon>/<date>/`` relative
+to ``src/`` (``Filer.ray_trace_folder``; ``<date>`` = ``20240109`` for
+``nominal``, ``20260112`` for ``extended``, from ``Globals.dist_nom_config`` /
+``dist_ext_config``).  All ``*.csv`` files in the folder are used; in extended
+mode only those with ``'in-band'`` in the name.  File layout (parsed by
+``RayTrace._read_csv``): header lines ``Echelle angle: <deg>``,
+``Prism angle: <deg>`` and, for nominal files, ``Spectral order: <n>``; then a
+column-name line; then one row per ray.  Nominal columns: ``sp_slice, order,
+slice, wavelength, fp2_x, fp2_y, slicer_x, slicer_y, ifu_x, ifu_y, slit_x,
+slit_y, det_x, det_y, chief_ray_vignetted?``; extended columns use ``fp1_x,
+fp1_y`` and ``sp_slicer_x, sp_slicer_y`` instead of ``fp2_*`` / ``slit_*``.
+The maps ``RayTrace.nom_csv_map`` / ``ext_csv_map`` rename these to the
+internal series (``fp2_x -> efp_x``, ``det_x -> mfp_x`` ...).
+
+An AIT variant (``is_ait_data = True``) would read
+``../data/distortion_ait/<opticon>/ait/LMS_ait_dist_coord.csv`` written by
+``lmsaiv_opt02`` (columns ``slice_no, efp_w, efp_x, efp_y, mfp_x, mfp_y``), but
+see Notes.
+
+Outputs (all under ``../output/distortion/<opticon>/<date>/`` unless stated)
+----------------------------------------------------------------------------
+- ``fits/lms_efp_mfp{_nom|_ext}_pa#####_ea[p|n]#####_v<date>.fits`` -- one per
+  configuration (``Filer.write_svd_transforms``; tag from
+  ``Globals.make_lms_config_id``, ``int(10000 * angle)``).  Primary header
+  ``OPTICON, PRI_ANG, ECH_ANG, N_MATS=4, MAT_ORD=4``; one ``BinTableHDU`` per
+  slice/order named ``SLICE_<slice_no>`` with header ``SLICE_NO, ECH_ORD,
+  W_MIN, W_MAX`` and columns ``A, B, AI, BI`` (16 float32 each, TFORM ``E``).
+  The Filer docstring calls this "the data product we provide to ScopeSim and
+  the pipeline".
+- ``fits/lms_dist_mfp_dfp_v<date>.fits`` -- the per-detector affines
+  (``Filer.write_affine_transform``): primary ``N_MATS=4, MAT_ORD=3``; one
+  table with columns ``MFP>DET1..4`` and ``DET1..4>MFP`` (9 float32 each).
+- ``fits/lms_dist_efp_mfp_{nom|ext}_fit_parameters_v<date>.fits``
+  (``Filer.write_fit_parameters``): ext 1 ``WP0..`` (prism angle versus
+  wavelength polynomial), ext 2 ``SLICE_NO, PA0_EA0 .. PA0_EA3`` (``n*lambda``
+  surface), ext 3 ``SLICE_NO, ROW, COL, A_PA0_EA0 .. BI_PA0_EA3`` (matrix-term
+  surfaces, 16 rows per slice).
+- ``distortion_<opticon>_<date>_trace.pkl`` -- the list of ``RayTrace``
+  objects (``Filer.trace_file``).
+- ``../output/distortion/<opticon>/svd_fits_index_{nom|ext}_{zmx|ait}.pkl`` --
+  dict keyed ``'eo<order:02d>_ea<p|n><int(10*|ea|):02d>'`` ->
+  ``{'fits_name', 'wav_ref', 'pri_ang', 'ech_ang', 'ech_ords'}``.
+- Console output and, at debug level ``'low'`` or above, matplotlib windows.
+
+Notes
+-----
+- Inconsistency: all run control is hard-coded inside :func:`run`
+  (``is_ait_data = False``, ``opticon = Globals.nominal``,
+  ``generate_transforms = plot_dispersion = fit_transforms =
+  evaluate_transforms = test_transform_fit = True``), and the ``*args`` are
+  only printed.  Consequently ``lmsaiv_opt02.Opt02`` calling ``lmsdist.run()``
+  to fit the AIT coordinate CSV actually refits the nominal Zemax data.
+- Bug: the printed ``a_rms`` is always 0 because ``RayTrace.create_svd_transforms``
+  never assigns ``RayTrace.a_rms`` (the per-trace values collected here are
+  all 0).
+- Bug: in the ``test_transform_fit`` block ``test_waves`` (with the
+  extended-mode override 4.4-4.6 um) is computed but the loop iterates
+  ``np.linspace(2.7, 5.4, 28)`` directly, so extended mode is tested at
+  nominal wavelengths.
+- Inconsistency: the ``fit_transforms`` comments say the prism-angle fit is
+  for field slice 13, but ``PolyFit.create_polynomial_surface_fits`` uses
+  slice 12 for the ``n*lambda`` surface.
+- Inconsistency: ``Globals.wpa_fit_order = {nominal: 6, extended: 3}`` is the
+  coefficient COUNT in ``PolyFit.create_polynomial_fit`` (degree 5 / 2).
+- Inconsistency: ``Globals.det_gap = 3.0`` mm feeds the affines and masks used
+  here, whereas ``lms_detector.Detector.mosaic_gap = 2.23`` mm and the irdb
+  imply 2.23 mm.
+- Inconsistency: the nominal/extended prism-angle offset correction
+  (``nom_ext_pa_corr``) is computed only at debug level ``'low'``, after
+  ``Filer.write_fit_parameters`` has already been called, so the written
+  extended-mode ``WP`` table never includes it; the three hard-coded
+  ``ext_ea0_waves`` / ``ext_ea0_pas`` values are undocumented.
+- Bug: ``ext_coeffs_corr = nom_coeffs`` aliases the nominal coefficient list
+  and then mutates ``[0]`` in place.
+- Bug: the ``mfp_plot_points`` dict passed to ``Plot.plot_mfp_points`` lacks
+  the ``'spifu_no'`` key that function requires (``KeyError`` at debug
+  ``'low'``).
+- Clean-up: ``filer.set_configuration`` is called three times with identical
+  arguments; ``use_nominal_wpa_fit``, ``offset_data_list``,
+  ``analysis_type``'s comment about ``'iq'`` / ``'sky'``, and the
+  ``RayTrace(cfg_id=..., silent=True)`` kwargs are unused.
+- Clean-up: relies on ``_ = Transform()`` to create the class-level affines
+  before any mapping is done.
+- Open question: ``Globals.alpha_pix = 8.7`` mas versus the irdb 8.2 mas
+  pixel scale, and which detector-gap value is current, should be confirmed
+  with the author (both cite E-REP-ATC-MET-1003 for the field of view).
 """
 import math
 import numpy as np
@@ -22,6 +133,69 @@ from lms_transform import Transform
 from lmsdist_polyfit import PolyFit
 
 def run(*args):
+    """Run the complete ``lmsdist`` chain for the hard-coded configuration (nominal Zemax data).
+
+    The function is a script body: five sequential blocks, each enabled by a
+    local boolean that is always ``True``.
+
+    ``generate_transforms``
+        For every CSV in ``Filer.ray_trace_folder``: build a ``RayTrace``,
+        ``load`` it (fits ``A, B, AI, BI`` per slice/order),
+        ``find_wavelength_bounds``, write ``lms_efp_mfp_*.fits``
+        (``Filer.write_svd_transforms``), and record it under the key
+        ``'eo<order>_ea<p|n><10*|ea|>'`` (order = first order for nominal,
+        second for extended).  Then pickle the index dict
+        (``svd_fits_index_{nom|ext}_{zmx|ait}.pkl``), write the affine FITS
+        (``Filer.write_affine_transform``), print the RMS residual and pickle
+        the trace list (``Filer.trace_file``).
+    ``plot_dispersion``
+        At debug level ``'low'``: ``Plot.series`` coverage / dispersion plots.
+    ``fit_transforms`` (Zemax data only)
+        From each trace's ``get_ifp_boresight`` (slice 13) collect
+        ``(wave, pri_ang, ech_ang, ech_ord)``; per order fit ``wave(ech_ang)``
+        and ``pri_ang(wave)`` as quadratics (3 coefficients) to get the
+        wavelength and prism angle at ``ech_ang = 0``; fit ``pri_ang(wave)``
+        across orders with ``Globals.wpa_fit_order[opticon]`` coefficients
+        (``wpa_fit``).  Read back all SVD transforms, fit the ``n*lambda``
+        surface and all matrix terms (``PolyFit.create_polynomial_surface_fits``)
+        and write ``Filer.write_fit_parameters``.  At debug ``'low'`` compare
+        nominal and extended prism-angle fits.
+    ``evaluate_transforms`` (Zemax data only)
+        For every trace, slice and order: project the Zemax EFP rays through
+        (a) the slice's own SVD transform and (b) a transform rebuilt from the
+        surface fits at the trace's ``(pri_ang, ech_ang)`` (inline equivalent
+        of ``PolyFit.make_fit_matrix``); print a comparison table at debug
+        ``'medium'`` and plot at ``'low'``.
+    ``test_transform_fit`` (Zemax data only)
+        Call ``PolyFit.wave_to_config`` for 28 wavelengths 2.7-5.4 um and 6
+        wavelengths 2.7-2.9 um and print the resulting configurations.
+
+    Parameters
+    ----------
+    *args
+        Printed and otherwise ignored.  ``lmsaiv_opt02`` calls ``run()`` with
+        no arguments.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    - Inconsistency: ``is_ait_data`` and ``opticon`` are hard-coded; there is
+      no way for a caller to request the AIT CSV or the extended mode without
+      editing the source, so ``lmsaiv_opt02``'s call refits Zemax data.
+    - Bug: printed ``a_rms`` is always 0 (see module notes).
+    - Bug: ``test_waves`` is computed but not iterated over.
+    - Bug: ``mfp_plot_points`` lacks ``'spifu_no'`` required by
+      ``Plot.plot_mfp_points``.
+    - Clean-up: ``Globals.debug_level = base_debug_level`` re-assigns the
+      class attribute directly instead of via ``set_debug_level``; the
+      in-loop ``filer.read_fit_parameters`` calls re-read the same FITS file
+      34 times.
+    - Open question: the 28-point 2.7-5.4 um test grid is arbitrary; no
+      acceptance threshold is applied to the results, they are only printed.
+    """
     print('lmsdist, distortion model - Starting')
     print(args)
     _ = Globals()

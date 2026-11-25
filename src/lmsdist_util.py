@@ -1,8 +1,101 @@
 #!/usr/bin/env python
-"""
-@author: Alistair Glasse
+"""Numerical core of ``lmsdist``: distortion polynomials, phase definition and focal-plane mappings.
 
-Update:
+Purpose
+-------
+:class:`Util` gathers the static functions that implement the
+E-TNT-ATC-MET-1058 LMS distortion model and the bookkeeping around it:
+
+- the grating phase ``phi = n * lambda / (2 d)`` (:meth:`Util.waves_to_phases`,
+  :meth:`Util.phases_to_waves`);
+- the bivariate polynomial transform and its SVD least-squares solver
+  (:meth:`Util.apply_svd_distortion`, :meth:`Util.solve_svd_distortion`);
+- the slice <-> EFP across-slice coordinate convention
+  (:meth:`Util.slice_to_efp_y`, :meth:`Util.efp_y_to_slice_no`,
+  :meth:`Util.encode_slice_no`, :meth:`Util.decode_slice_no`);
+- the chained mappings EFP -> MFP -> DFP and back
+  (:meth:`Util.efp_to_mfp`, :meth:`Util.mfp_to_dfp`, :meth:`Util.efp_to_dfp`,
+  :meth:`Util.dfp_to_mfp`, :meth:`Util.mfp_to_efp`, :meth:`Util.dfp_to_efp`);
+- selection helpers over lists of ``lms_transform.Transform``
+  (:meth:`Util.filter_transform_list`, :meth:`Util.get_term_values`,
+  :meth:`Util.find_closest_transforms`, :meth:`Util.find_matching_transforms`);
+- assorted legacy text-format readers/writers and study helpers.
+
+Program
+-------
+``lmsdist`` (also imported by ``lmssim``, ``lmsaiv`` and ``lmsiq``).
+
+Coordinate systems
+------------------
+- EFP (entrance focal plane): ``efp_x`` mm along slice (alpha), ``efp_y`` mm
+  across slice (beta), ``efp_w`` wavelength in microns.  Plate scale
+  ``Globals.efp_arcsec_mm = 0.180723`` arcsec/mm; slice width
+  ``Globals.beta_slice = 20.7`` mas.
+- MFP (mosaic focal plane): ``mfp_x``, ``mfp_y`` mm, origin at the centre of
+  the 2 x 2 detector mosaic.  ``mfp_x`` increases towards SHORTER wavelength;
+  slice 1 is at minimum ``mfp_y``.
+- DFP (detector focal plane): ``det_nos`` 1..4, ``dfp_x`` column, ``dfp_y``
+  row in pixels.  Detector assignment by MFP quadrant: ``x > 0`` -> 1 or 3,
+  ``x < 0`` -> 2 or 4, ``y > 0`` -> 1 or 2, ``y < 0`` -> 3 or 4.
+
+Distortion model
+----------------
+For one slice and echelle order, with ``x = phi`` (phase) and ``y = alpha =
+efp_x`` and ``dim = Globals.svd_order = 4``::
+
+    mfp_x = sum_{i,j<4, i+j<=3} A[i, j] * alpha**i * phi**j
+    mfp_y = sum_{i,j<4, i+j<=3} B[i, j] * alpha**i * phi**j
+
+(row index = power of the second input, column index = power of the first
+input).  The inverse matrices ``AI, BI`` map ``(mfp_x, mfp_y) -> (phi, alpha)``
+in the same form.  Elements with ``i + j > 3`` are forced to zero by the
+solver (``svd_order = 4`` -> cubic, 10 free terms per matrix).  Across-slice
+position is not part of the polynomial: it is degenerate with wavelength on
+the detector and is recovered from the slice number only.
+
+Input data
+----------
+None read directly except by the legacy text readers
+(:meth:`Util.read_raytrace_file`, :meth:`Util.read_polyfits_file`,
+:meth:`Util.read_text_file`), whose formats predate the FITS products and
+have no producer in the repository.  Everything else operates on in-memory
+``Transform`` objects and numpy arrays.
+
+Outputs
+-------
+None on disk except :meth:`Util.write_text_file` / :meth:`Util.print_stats`
+(legacy).  The mapping functions return dicts of arrays keyed
+``efp_x, efp_y, efp_w`` / ``mfp_x, mfp_y`` / ``det_nos, dfp_x, dfp_y``.
+
+Notes
+-----
+- Inconsistency: ``Globals.det_gap = 3.0`` mm (used via
+  ``Transform.create_affines`` in every MFP <-> DFP call here) versus
+  ``lms_detector.Detector.mosaic_gap = 2.23`` mm and the irdb value 2.23 mm.
+- Inconsistency: :meth:`Util.mfp_to_dfp` and :meth:`Util.dfp_to_mfp` return
+  points GROUPED BY DETECTOR, not in input order, and silently drop points
+  with ``mfp_x == 0`` or ``mfp_y == 0``; callers that zip inputs with
+  outputs (``RayTrace.find_wavelength_bounds``, ``test_out_and_back``) assume
+  order is preserved.
+- Bug: :meth:`Util.find_dispersion`, :meth:`Util.read_raytrace_file`,
+  :meth:`Util.extract_configs` and :meth:`Util.test_out_and_back` reference
+  attributes that no longer exist (``trace.unique_slices``, ``trace.slice``,
+  ``trace.waves_to_phase``, dict-style ``transform['configuration']``); they
+  are dead code.
+- Bug: :meth:`Util.find_closest_transforms` reads
+  ``slice_configuration['spifu_no']``, which is not in
+  ``Globals.slice_config_template`` (``KeyError``); ``lmssim_toy`` still calls it.
+- Inconsistency: ``lmsaiv_opt02`` calls ``Util.slice_to_efp_y(slice_no,
+  beta_phase, opticon)`` with three arguments; the function takes two.
+- Clean-up: :meth:`Util.filter_transform_list` uses the dict union operator
+  ``|`` (Python >= 3.9).
+- Clean-up: :meth:`Util.find_fwhm_lin` duplicates
+  ``lmsiq_analyse.Analyse._find_fwhm_lin``; :meth:`Util.print_list` is used
+  only by ``lmsiq``; ``n_lines_config`` is unused.
+- Clean-up: ``least_squares`` and ``curve_fit`` are imported but unused.
+- Open question: :meth:`Util.solve_svd_distortion` comments say "converted
+  to python from Ronayette's original IDL code by Temim, 21/2/17 ... see note
+  on MIRI calibration"; the MIRI note is not referenced by document number.
 """
 import math
 import numpy as np
@@ -13,14 +106,39 @@ from lms_globals import Globals
 
 
 class Util:
+    """Static helper functions for the LMS distortion model (see module docstring).
+
+    Attributes
+    ----------
+    n_lines_config : int
+        Unused (``-1``).
+
+    Notes
+    -----
+    - Clean-up: the class is a namespace; ``__init__`` does nothing.
+    """
 
     n_lines_config = -1
 
     def __init__(self):
+        """Create a ``Util`` object.  No state is initialised."""
         return
 
     @staticmethod
     def print_list(title, val_list):
+        """Print ``"<title> - v1, v2, ..."`` for a list of integers.
+
+        Parameters
+        ----------
+        title : str
+        val_list : iterable of int
+            Each formatted with ``'{:d}'`` (floats raise ``ValueError``).
+
+        Notes
+        -----
+        - Clean-up: used only by the ``lmsiq`` program
+          (``lmsiq_cuber``, ``lmsiq_phase``), not by ``lmsdist``.
+        """
         text = title + ' - '
         for val in val_list:
             text += "{:d}, ".format(val)
@@ -29,6 +147,23 @@ class Util:
 
     @staticmethod
     def write_text_file(transform_file, text_block):
+        """Write ``text_block`` to ``transform_file`` (overwriting) and return the closed file object.
+
+        Parameters
+        ----------
+        transform_file : str
+        text_block : str
+
+        Returns
+        -------
+        file object
+            Already closed; of no practical use to the caller.
+
+        Notes
+        -----
+        - Clean-up: legacy companion of :meth:`get_transform_text`; not
+          called anywhere.
+        """
         tf_file = open(transform_file, 'w')
         tf_file.write(text_block)
         tf_file.close()
@@ -36,6 +171,23 @@ class Util:
 
     @staticmethod
     def read_text_file(text_file, **kwargs):
+        """Return the lines of a text file after skipping ``n_hdr_lines`` header lines.
+
+        Parameters
+        ----------
+        text_file : str
+        n_hdr_lines : int, optional
+            Default 0.
+
+        Returns
+        -------
+        list of str
+
+        Notes
+        -----
+        - Clean-up: the file handle is never closed explicitly; not called
+          anywhere in the repository.
+        """
         n_hdr_lines = kwargs.get('n_hdr_lines', 0)
         all_lines = open(text_file, 'r').read().splitlines()
         lines = all_lines[n_hdr_lines:]
@@ -43,20 +195,81 @@ class Util:
 
     @staticmethod
     def waves_to_phases(waves, ech_ords):
+        """Convert wavelengths to the dimensionless grating phase used by the transforms.
+
+        .. math::
+
+            \\phi = \\frac{n \\lambda}{2 d}, \\qquad
+            d = \\mathrm{rule\\_spacing} \\times n_{Ge} = 18.2\\,\\mu m \\times 4.05
+
+        i.e. ``d = Globals.rule_spacing * Globals.ge_refractive_index`` is the
+        rule spacing of the immersed germanium echelle scaled by the
+        refractive index, so ``phi`` is ``sin(theta_in) + sin(theta_out)`` up
+        to the factor 2 for a Littrow-like configuration.  ``phi`` is the
+        first input coordinate of ``A`` / ``B`` in :meth:`apply_svd_distortion`
+        and is near 1 for the blaze (e.g. ``n = 27, lambda = 4.65 um ->
+        phi ~= 0.85``).
+
+        Parameters
+        ----------
+        waves : float or numpy.ndarray
+            Wavelength(s) in microns.
+        ech_ords : int or numpy.ndarray
+            Echelle diffraction order(s), broadcastable with ``waves``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            Phase(s).
+
+        Notes
+        -----
+        - Open question: the refractive index of germanium is taken as the
+          constant 4.05 with no wavelength dependence; whether the Zemax model
+          uses dispersion for the immersion medium is not recorded here.
+        """
         d = Globals.rule_spacing * Globals.ge_refractive_index
         phases = waves * ech_ords / (2.0 * d)
         return phases      # phases
 
     @staticmethod
     def phases_to_waves(phases, ech_ords):
+        """Inverse of :meth:`waves_to_phases`: ``lambda = 2 d phi / n``.
+
+        Parameters
+        ----------
+        phases : float or numpy.ndarray
+        ech_ords : int or numpy.ndarray
+            Echelle order(s); the order must be known independently because
+            it cannot be recovered from the phase alone.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            Wavelength(s) in microns.
+        """
         d = Globals.rule_spacing * Globals.ge_refractive_index
         waves = phases * 2.0 * d / ech_ords
         return waves
 
     @staticmethod
     def apply_affine_transform(x, y, aff):
-        """
-        @author Alistair Glasse
+        """Apply a 3 x 3 homogeneous affine matrix to point arrays.
+
+        ``(u, v, 1)^T = aff @ (x, y, 1)^T`` for every point.
+
+        Parameters
+        ----------
+        x, y : array_like
+            Equal-length coordinate arrays.
+        aff : numpy.ndarray
+            ``(3, 3)`` matrix, e.g. ``Transform.affines['m'][det_idx]``
+            (MFP mm -> DFP pixels) or ``['mi'][det_idx]`` (inverse).
+
+        Returns
+        -------
+        u, v : numpy.ndarray
+            Transformed coordinates.
         """
         n_pts = len(x)
         unity = np.full(n_pts, 1.)
@@ -66,11 +279,44 @@ class Util:
 
     @staticmethod
     def apply_svd_distortion(x, y, a, b):
-        """
-        @author Alistair Glasse
-        21/2/17   Create to encapsulate distortion transforms
-        Apply a polynomial transform pair (A,B or AI,BI) to an array of points
-        affine = True  Apply an affine version of the transforms (remove all non-linear terms)
+        """Apply a distortion matrix pair (A, B or AI, BI) to arrays of points.
+
+        With ``dim = a.shape[0]`` (4) and power vectors
+        ``xin = [1, x, x^2, x^3]``, ``yin = [1, y, y^2, y^3]`` per point:
+
+        .. math::
+
+            x_{out} = y_{in}^T A\\, x_{in} = \\sum_{i,j} A_{ij}\\, y^i x^j, \\qquad
+            y_{out} = y_{in}^T B\\, x_{in} = \\sum_{i,j} B_{ij}\\, y^i x^j
+
+        so the ROW index is the power of the second input ``y`` and the COLUMN
+        index the power of the first input ``x``.  In the forward direction
+        ``x = phase`` (:meth:`waves_to_phases`), ``y = alpha = efp_x`` and the
+        outputs are ``mfp_x, mfp_y`` (mm); in the inverse direction
+        ``x = mfp_x``, ``y = mfp_y`` and the outputs are ``phase, alpha``.
+        This is the E-TNT-ATC-MET-1058 transform; the matrices come from
+        :meth:`solve_svd_distortion` with the ``i + j > order`` terms zero.
+
+        Parameters
+        ----------
+        x, y : array_like
+            Equal-length input coordinates.
+        a, b : numpy.ndarray
+            Square ``(dim, dim)`` matrices.
+
+        Returns
+        -------
+        xout, yout : numpy.ndarray
+
+        Notes
+        -----
+        - Inconsistency: the previous docstring mentioned an ``affine=True``
+          option; no such parameter exists.
+        - Clean-up: the per-point Python loop (``for i in range(n_pts)``) could
+          be a single ``einsum``; ``RayTrace.create_svd_transforms`` calls this
+          for every slice/order.
+        - Clean-up: the header comment date 21/2/17 matches the MIRI-derived
+          :meth:`solve_svd_distortion` (Temim); the two functions form a pair.
         """
         dim = a.shape[0]
         n_pts = len(x)
@@ -91,6 +337,39 @@ class Util:
 
     @staticmethod
     def read_raytrace_file(raytrace_file, **kwargs):
+        """Read the legacy plain-text ray-trace + transform dump.  Dead code.
+
+        Expected record structure per configuration: a line
+        ``<label>,<ea>,<label>,<pa>``; a line ``<label>,<slice_no>,<label>,<spifu_no>``;
+        a line ``n_mats=,<n>,n_terms=,<t>,n_layers=,<l>``; then for each
+        matrix a title line and ``n_terms`` rows of ``n_terms * n_layers``
+        comma-separated values; then ``<label>,<n_pts>``, a column-name line
+        and ``n_pts`` data rows.  This is the format written by
+        :meth:`get_transform_text` plus ray coordinates, predating the FITS
+        products of ``lms_filer.Filer``.
+
+        Parameters
+        ----------
+        raytrace_file : str
+        debug : bool, optional
+            Unused.
+
+        Returns
+        -------
+        configs : numpy.ndarray
+            ``(n_cfg, 4)`` rows ``(ea, pa, slice_no, spifu_no)``.
+        transforms : numpy.ndarray
+            ``(n_cfg, n_mats, n_terms, n_terms, n_layers)``.
+        ray_coords : list of dict
+            Per-configuration series dicts.
+
+        Notes
+        -----
+        - Bug: no producer of this format exists in the repository; the
+          ``n_layers`` dimension belongs to an earlier per-echelle-angle
+          polynomial layout.
+        - Clean-up: dead code; not called anywhere.
+        """
         debug = kwargs.get('debug', False)
 
         fmt = "Reading raytrace and transform data from file= {:s}"
@@ -156,10 +435,35 @@ class Util:
 
     @staticmethod
     def extract_configs(tf_list, **kwargs):
-        """ Extract unique configuration data (echelle angle, wavelength etc.)
-        from a transform list.
-        :param tf_list:
-        :return:
+        """Parse a legacy CSV transform listing into configuration, wavelength-limit and stats arrays.  Dead code.
+
+        Each text row has >= 20 comma-separated tokens: columns 0-5 are
+        configuration values (the sixth being a configuration id), 6 a matrix
+        id, 8-11 one matrix row, 12-15 four wavelength limits and 16-19 four
+        statistics.  Rows are grouped into matrices by column 6 and into
+        configurations by column 5.
+
+        Parameters
+        ----------
+        tf_list : list of str
+            Text rows (header already removed).
+
+        Returns
+        -------
+        configs : list of numpy.ndarray
+            Ten arrays: six configuration columns followed by four matrix
+            stacks.
+        wave_limits : list of numpy.ndarray
+            Four arrays (columns 12-15).
+        stats : list of numpy.ndarray
+            Four arrays (columns 16-19).
+
+        Notes
+        -----
+        - Bug: no writer for this 20-column format exists in the repository;
+          the layout corresponds to the ``configs`` argument of
+          ``lms_wcal.Wcal.write_poly``.
+        - Clean-up: dead code; not called anywhere.
         """
         config_list = []
         for i in range(0, 10):
@@ -227,6 +531,31 @@ class Util:
 
     @staticmethod
     def find_polyfit(x, coeffs, **kwargs):
+        """Fit every element of a stack of square matrices as a 1-D polynomial in ``x``.
+
+        Parameters
+        ----------
+        x : array_like
+            Independent variable (e.g. echelle angle), length ``n``.
+        coeffs : numpy.ndarray
+            ``(n, ncr, ncr)`` stack of matrices.
+        order : int, optional
+            Polynomial degree for ``numpy.polyfit``; default 1.
+        debug : bool, optional
+            Print each ``(x, y)`` pair.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(ncr, ncr, order + 1)`` coefficients, highest power first
+            (``numpy.polyfit`` convention).
+
+        Notes
+        -----
+        - Clean-up: legacy 1-D precursor of
+          ``lmsdist_polyfit.PolyFit.find_slice_fit`` (bivariate); not called
+          anywhere.
+        """
         debug = kwargs.get('debug', False)
         order = kwargs.get('order', 1)
         _, ncr, _ = coeffs.shape
@@ -241,6 +570,38 @@ class Util:
 
     @staticmethod
     def find_dispersion(traces, configuration):
+        """Estimate the dispersion (micron per pixel) at a wavelength from a slice transform.  Dead code.
+
+        Intended algorithm: locate the trace and slice transform for the
+        requested order and slice, project ``wave`` and ``wave + 1 nm`` at
+        ``alpha = 0`` through matrix A, and convert the resulting ``dx`` (mm)
+        to microns per ``Globals.nom_pix_pitch`` pixel.
+
+        Parameters
+        ----------
+        traces : list of RayTrace
+        configuration : tuple
+            ``(slice_no, wave, prism, ech_angle, order, im_pix_size)``.
+
+        Returns
+        -------
+        float
+            Dispersion in microns per pixel (would be).
+
+        Raises
+        ------
+        AttributeError
+            ``trace.unique_slices``, ``trace.slice``, ``trace.waves_to_phase``
+            and ``trace.apply_svd_distortion`` do not exist on ``RayTrace``.
+        UnboundLocalError
+            If no trace matches, ``dw_lmspix`` is returned before assignment.
+
+        Notes
+        -----
+        - Bug: references a pre-2023 ``RayTrace`` API; cannot run.
+        - Clean-up: the working equivalent is the finite-difference
+          ``'dispersion'`` branch of ``lmsdist_plot.Plot.series``.
+        """
         dw = 0.001  # Choose a wavelength interval of 1 nanometre (approx. 4000 / 50 = 80 pixels)
 
         slice_no, wave, prism, ech_angle, order, im_pix_size = configuration
@@ -270,6 +631,25 @@ class Util:
 
     @staticmethod
     def print_stats(st_file, data):
+        """Print and write a table of transform residual statistics (microns), then close the file.
+
+        Parameters
+        ----------
+        st_file : file object
+            Open for writing (``Filer.stats_file``); closed on return.
+        data : tuple
+            ``(n_terms, poly_order, offset_xy)`` where ``offset_xy`` has shape
+            ``(n, m, 2, k)`` in mm; index 2 selects x / y.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Clean-up: legacy; not called anywhere.  Closing a file the caller
+          opened is a surprising side effect.
+        """
         fmt1 = "{:15s}{:15s}"
         fmt2 = "{:20s}{:20s}{:20s}"
         fmt3 = "{:10s}{:10s}{:10s}{:10s}{:10s}{:10s}"
@@ -302,7 +682,31 @@ class Util:
 
     @staticmethod
     def filter_transform_list(transform_list, **kwargs):
-        """ Filter transform data to select a configuration value (e.g. keyword slice=13).
+        """Return the transforms whose merged configuration matches all keyword filters.
+
+        For each transform the dict
+        ``transform.lms_configuration | transform.slice_configuration`` is
+        formed and every ``key=value`` in ``kwargs`` must match exactly.
+
+        Parameters
+        ----------
+        transform_list : list of Transform
+        **kwargs
+            E.g. ``slice_no=13``, ``ech_ord=27``, ``pri_ang=6.9``.
+
+        Returns
+        -------
+        list of Transform
+
+        Raises
+        ------
+        KeyError
+            If a filter key is in neither configuration dict.
+
+        Notes
+        -----
+        - Clean-up: dict union ``|`` requires Python >= 3.9.
+        - Clean-up: ``Transform.is_match`` is a two-key special case of this.
         """
         filtered_transform_list = []
         for transform in transform_list:
@@ -316,6 +720,29 @@ class Util:
 
     @staticmethod
     def parse_slice_locations(slice_locs, **kwargs):
+        """Expand an ``lmsiq`` slice-location spec into ``(slice_no, folder, label)`` tuples.
+
+        Parameters
+        ----------
+        slice_locs : sequence
+            ``(target_slice, n_slices, ifu_flag)``: centre slice, number of
+            slices centred on it and ``'ifu'`` to append an IFU-image entry.
+        boresight : bool, optional
+            If True return only the target slice.
+
+        Returns
+        -------
+        tgt_slice : int
+        n_slices : int
+        slice_idents : list of tuple
+            ``(slice_no, 'slice_<n>/', ', slice <n>')`` entries, plus
+            ``(-1, 'ifu/', ', IFU image')`` when requested.
+
+        Notes
+        -----
+        - Clean-up: belongs to the ``lmsiq`` image-quality folder
+          conventions, not to ``lmsdist``; not called from this program.
+        """
         boresight = kwargs.get('boresight', False)      # True = Extract boresight slice only
         tgt_slice = int(slice_locs[0])
         slice_idents = []
@@ -339,6 +766,29 @@ class Util:
 
     @staticmethod
     def read_polyfits_file(poly_file):
+        """Read a legacy CSV of polynomial coefficients into a 2-D float array.
+
+        Skips the first line, then reads comma-separated rows (dropping the
+        last, empty, token of each) until a row with fewer than two tokens.
+
+        Parameters
+        ----------
+        poly_file : str
+            E.g. ``Filer.poly_file`` (``*_dist_poly.txt``).
+
+        Returns
+        -------
+        numpy.ndarray
+            ``(n_rows, n_cols)``.
+
+        Notes
+        -----
+        - Inconsistency: ``lms_test.py`` unpacks the result as
+          ``poly, ech_bounds = util.read_polyfits_file(poly_file)``, but a
+          single array is returned.
+        - Clean-up: no current writer of ``*_dist_poly.txt`` exists in the
+          repository.
+        """
         pf = open(poly_file, 'r')
         lines = pf.read().splitlines()
         pf.close()
@@ -356,6 +806,22 @@ class Util:
 
     @staticmethod
     def _decode_tf_list_orders(tf_list):
+        """Return the distinct echelle orders found in column 1 of legacy transform text rows.
+
+        Parameters
+        ----------
+        tf_list : list of str
+            Comma-separated rows with the order in token 1.
+
+        Returns
+        -------
+        list of int
+            In order of first appearance.
+
+        Notes
+        -----
+        - Clean-up: legacy helper for :meth:`extract_configs`; not called.
+        """
         ech_ords = []
         for tf in tf_list:
             tokens = tf.split(',')
@@ -366,6 +832,27 @@ class Util:
 
     @staticmethod
     def get_transform_text(transform):
+        """Serialise a dict of matrices to the legacy plain-text block read by :meth:`read_raytrace_file`.
+
+        Writes ``n_mats=,<n>,n_terms=,<t>,n_layers=,<l>,`` then, per matrix,
+        ``Matrix <name>,`` and ``n_rows`` lines of ``'{:15.6e},'`` values
+        (all layers of a row concatenated, separated by three spaces).
+
+        Parameters
+        ----------
+        transform : dict
+            ``{name: ndarray}``; arrays are promoted with ``numpy.atleast_3d``
+            so 2-D matrices get ``n_layers = 1``.
+
+        Returns
+        -------
+        str
+
+        Notes
+        -----
+        - Clean-up: legacy text format superseded by the FITS product of
+          ``Transform.make_hdu_ext``; not called anywhere.
+        """
         text = ''
         n_mat = len(transform)
         is_first_matrix = True
@@ -389,7 +876,51 @@ class Util:
 
     @staticmethod
     def get_term_values(transforms, fslice_no, pslice_no, debug=False):
-        """ Find the transforms which map the centre of slice 12 (alpha = 0.0) onto the EFP.
+        """Collect per-configuration angles, boresight wavelength and matrices for one slice.
+
+        For every transform whose ``slice_configuration['slice_no']`` equals
+        ``encode_slice_no(fslice_no, pslice_no)``:
+
+        1. the slice-centre EFP point ``(efp_x = 0, efp_y = slice_to_efp_y(
+           fslice_no, 0))`` is projected with :meth:`efp_to_mfp` at 100
+           wavelengths between the transform's ``w_min`` and ``w_max``;
+        2. the boresight wavelength ``w_bs`` at which ``mfp_x == 0`` is
+           interpolated with ``numpy.interp(0, mfp_x_list, w_list)``;
+        3. ``pri_ang, ech_ang, ech_ord, mfp_y (at the last sample), w_bs`` and
+           the matrices dict are appended to the result lists.
+
+        Parameters
+        ----------
+        transforms : list of Transform
+            Must have ``w_min`` / ``w_max`` set (``RayTrace.find_wavelength_bounds``).
+        fslice_no : int
+            Field slice number.
+        pslice_no : int
+            Spectral (pupil) slice number; 0 in nominal mode.
+        debug : bool, optional
+            Print a table of the sampled values.
+
+        Returns
+        -------
+        dict
+            ``{'slice_no': fslice_no, 'spifu_no': pslice_no, 'pri_ang': [...],
+            'ech_ang': [...], 'mfp_y': [...], 'w_bs': [...], 'ech_ords': [...],
+            'matrices': [...]}`` -- the ``term_values`` consumed by
+            ``PolyFit.find_slice_fit`` / ``find_wxo_fit``.
+
+        Notes
+        -----
+        - Open question: ``numpy.interp`` needs increasing ``xp``.  The
+          ``mfp_x_list`` is built in ascending wavelength order and, per the
+          note in :meth:`mfp_to_dfp`, ``mfp_x`` DEcreases with wavelength, so
+          the abscissa is descending and the interpolated ``w_bs`` is not
+          guaranteed to be correct.  Verify against the Zemax boresight.
+        - Inconsistency: the returned ``'slice_no'`` is the FIELD slice
+          number, not the encoded universal slice number used everywhere else.
+        - Inconsistency: the previous docstring referred to "slice 12"; the
+          function is generic in ``fslice_no``.
+        - Clean-up: ``mfp_y`` is taken from the last of the 100 samples
+          (``w_max``), not at the boresight.
         """
         slice_no = Util.encode_slice_no(fslice_no, pslice_no)
         phase = 0.                      # Across slice fractional displacement
@@ -436,6 +967,28 @@ class Util:
 
     @staticmethod
     def find_matching_transforms(a_transforms, b_transforms):
+        """Pair transforms from two lists that share the same encoded ``slice_no``.
+
+        Used by ``lmsaiv_opt02`` to pair AIT-measured with Zemax transforms of
+        the same slice before comparing matrix terms.
+
+        Parameters
+        ----------
+        a_transforms, b_transforms : list of Transform
+
+        Returns
+        -------
+        list of tuple
+            ``(a_transform, b_transform)`` for every pair with equal
+            ``slice_configuration['slice_no']`` (all cross pairs; the echelle
+            order is NOT compared).
+
+        Notes
+        -----
+        - Open question: if either list holds several orders for one slice
+          (extended mode) every order combination is paired, including
+          mismatched orders.
+        """
         matching_transforms = []
         for a_transform in a_transforms:
             a_slice_no = a_transform.slice_configuration['slice_no']
@@ -447,10 +1000,50 @@ class Util:
 
     @staticmethod
     def find_closest_transforms(wave, opticon, svd_transforms):
-        """ Find the transforms (one per slice) which position a specific wavelength closest to the centre of the
-        detector mosaic.  For the extended mode, this is defined as order 24, slice 13
+        """Select the configuration (all its slice transforms) that centres a wavelength best.
 
-        Step 1. Find the ~boresight transform for slice 13 (For spifu selected, use spifu = 1 and ech_ord = 24)
+        Step 1: among transforms with ``slice_no == 13`` and ``spifu_no <= 1``
+        pick the one whose band centre ``(w_min + w_max) / 2`` is closest to
+        ``wave`` (astropy ``Quantity`` arithmetic in microns / nm).
+        Step 2: return every transform whose ``lms_configuration`` equals that
+        boresight transform's, plus the list of echelle orders they cover.
+
+        Parameters
+        ----------
+        wave : astropy.units.Quantity
+            Target wavelength (must carry a length unit; a plain float fails
+            in the ``Quantity`` subtraction).
+        opticon : str
+            Only consulted inside a disabled ``spec_order = False`` branch.
+        svd_transforms : list of Transform
+
+        Returns
+        -------
+        opt_transforms : list of Transform
+        ech_ords : list of int
+
+        Raises
+        ------
+        KeyError
+            ``slice_config['spifu_no']`` is not a key of
+            ``Globals.slice_config_template``.
+        AttributeError
+            If no slice-13 transform is found (``bs_transform`` stays ``None``).
+
+        Notes
+        -----
+        - Bug: ``'spifu_no'`` KeyError makes the function unusable with
+          transforms produced by the current ``RayTrace`` / ``Transform``;
+          ``lmssim_toy`` still calls it.
+        - Bug: ``slice_no != 13`` compares the ENCODED slice number, so in
+          extended mode (``slice_no = 100 * pslice + 13``) no transform ever
+          matches.
+        - Inconsistency: the previous docstring mentions "order 24" and
+          "spifu = 1" for extended mode; the code contains that logic only in
+          the disabled ``spec_order`` branch (``{23: (1, 4), 24: (2, 5), 25:
+          (3, 6)}``).
+        - Clean-up: ``slice_id`` is computed from ``Globals.slice_id_fmt`` and
+          discarded.
         """
         bs_transform = None
         w_off_min = 1000.*u.nm
@@ -500,6 +1093,33 @@ class Util:
 
     @staticmethod
     def out_of_bounds(fp_id, x, y):             # Check if out of bounds
+        """Return True if NO point lies inside the focal-plane bounds (aggregate test).
+
+        Uses ``Globals.fp_bounds[fp_id] = (x1, x2, y1, y2)`` (``'efp'``: the
+        EFP field of view; ``'mfp'``: +-40 mm).  ``in_x`` is
+        ``numpy.any(x1 < x < x2)`` and ``in_y`` likewise; the result is
+        ``not (in_x and in_y)``.
+
+        Parameters
+        ----------
+        fp_id : {'efp', 'mfp'}
+        x, y : numpy.ndarray
+
+        Returns
+        -------
+        bool
+            True only when every point is outside in x, or every point is
+            outside in y.  A single in-bounds point makes the whole set
+            "in bounds".
+
+        Notes
+        -----
+        - Inconsistency: the name suggests a per-point or all-points test;
+          the implementation is an "any point inside" test and a point set
+          with one inlier and many outliers is reported as in bounds.
+          Additionally ``in_x`` and ``in_y`` may be satisfied by different
+          points.
+        """
         bounds = Globals.fp_bounds[fp_id]
         x1, x2, y1, y2 = bounds
         in_x = np.any(np.logical_and(np.less(x1, x), np.greater(x2, x)))
@@ -509,10 +1129,43 @@ class Util:
 
     @staticmethod
     def efp_y_to_slice_no(efp_y):
-        """ Convert EFP y coordinate (mm) into a field slice number and phase (the offset from a slice centre as
-        a fraction of the slice width.  Slice numbers run from 1 to 28, so y = 0 corresponds to
-        (slice, phase) = (14, 1.0) = (15, 0.0).  We then note that in the Zemax model, slice 28 maps onto
-        a negative efp_y (~-1.5 mm). Also, note that the centre of the extended mode fov is at fslice, phase 12, 0.5
+        """Convert an EFP across-slice coordinate (mm) to (field slice number, intra-slice phase).
+
+        Inverse of :meth:`slice_to_efp_y`.  With the slice width in the EFP
+        ``w = Globals.beta_slice (20.7 mas -> arcsec) / Globals.efp_arcsec_mm
+        (0.180723 arcsec/mm) ~= 0.1145 mm``::
+
+            s = 15 - efp_y / w
+            slice_no = int(s)          # truncation towards zero
+            phase    = s - slice_no    # in [0, 1)
+
+        so ``efp_y = 0`` is the boresight at ``(slice 15, phase 0.0)``
+        (equivalently the upper edge of slice 14), positive ``efp_y`` gives
+        LOWER slice numbers and slice 28 lies at ``efp_y ~= -1.5`` mm.  The
+        centre of the extended-mode field is at ``(12, 0.5)`` per the original
+        comment.
+
+        Parameters
+        ----------
+        efp_y : float
+            Across-slice EFP coordinate in mm as a plain float.  (If an
+            astropy ``Quantity`` in mm is passed the division is dimensionless
+            and ``.value`` still works; ``lmssim_toy`` passes ``* u.mm``.)
+
+        Returns
+        -------
+        slice_no : int
+        phase : float
+
+        Notes
+        -----
+        - Inconsistency: ``phase`` here is the ACROSS-slice fractional
+          position, unrelated to the grating phase of :meth:`waves_to_phases`.
+        - Inconsistency: ``test_out_and_back`` calls this with a list
+          argument and unpacks two lists; the function is scalar.
+        - Open question: negative ``s`` (far above slice 1) truncates towards
+          zero rather than flooring, giving a phase in (-1, 0].
+        - Clean-up: the local ``phase = 0.`` initialisation is overwritten.
         """
         bs_slice_no, phase = 15, 0.
         efp_slice_width = Globals.beta_slice.to(u.arcsec) / Globals.efp_arcsec_mm
@@ -524,7 +1177,22 @@ class Util:
 
     @staticmethod
     def decode_slice_no(slice_no):
-        """ Convert a universal slice number into its spatial and spectral IFU slice numbers.
+        """Split an encoded universal slice number into ``(fslice_no, pslice_no)``.
+
+        ``pslice_no = slice_no // 100``, ``fslice_no = slice_no % 100``
+        (inverse of :meth:`encode_slice_no`).
+
+        Parameters
+        ----------
+        slice_no : int
+            E.g. 13 (nominal) or 312 (extended: pupil slice 3, field slice 12).
+
+        Returns
+        -------
+        fslice_no : int
+            Field (spatial) slice, 1..28.
+        pslice_no : int
+            Spectral (pupil / SPIFU) slice, 0 nominal, 1..6 extended.
         """
         pslice_no = slice_no // 100
         fslice_no = slice_no % 100
@@ -532,12 +1200,67 @@ class Util:
 
     @staticmethod
     def encode_slice_no(fslice_no, pslice_no):
+        """Return the universal slice number ``100 * pslice_no + fslice_no``.
+
+        This encoded value is what ``Transform.slice_configuration['slice_no']``,
+        ``RayTrace.series['slice_no']`` and the FITS ``SLICE_NO`` / ``EXTNAME``
+        carry.
+
+        Parameters
+        ----------
+        fslice_no : int
+            Field slice 1..28.
+        pslice_no : int
+            Spectral slice, 0 in nominal mode.
+
+        Returns
+        -------
+        int
+        """
         slice_no = 100 * pslice_no + fslice_no
         return slice_no
 
     @staticmethod
     def slice_to_efp_y(fslice_no, phase):
-        """ Return the EFP y coordinate of the field slice centre (in mm).
+        """Return the EFP across-slice coordinate (mm, astropy Quantity) of a slice position.
+
+        ::
+
+            w      = beta_slice (20.7 mas) / efp_arcsec_mm (0.180723 "/mm)   ~ 0.1145 mm
+            efp_y  = -(fslice_no + phase - 15) * w
+
+        ``phase = 0`` is the slice edge that coincides with the boresight for
+        slice 15 (``efp_y = 0``); ``phase = 0.5`` is the slice centre.  Higher
+        slice numbers lie at more negative ``efp_y``.  Inverse:
+        :meth:`efp_y_to_slice_no`.
+
+        Parameters
+        ----------
+        fslice_no : int
+            FIELD slice number 1..28 (not the encoded universal number).
+        phase : float
+            Across-slice fractional position in [0, 1).
+
+        Returns
+        -------
+        astropy.units.Quantity
+            In mm; callers take ``.value`` (``RayTrace.find_wavelength_bounds``,
+            ``lmsaiv_opt02``) or use it directly (:meth:`mfp_to_efp`).
+
+        Notes
+        -----
+        - Inconsistency: the previous docstring said "slice centre" but
+          ``phase = 0`` is a slice EDGE; the centre requires ``phase = 0.5``
+          (``lmssim_toy`` passes 0.5, ``RayTrace.find_wavelength_bounds`` and
+          :meth:`get_term_values` pass 0).
+        - Inconsistency: ``lmsaiv_opt02`` calls
+          ``slice_to_efp_y(slice_no, beta_phase, opticon)`` with a third
+          argument -> ``TypeError``.
+        - Bug (caller): ``RayTrace.find_wavelength_bounds`` passes the ENCODED
+          slice number, which is wrong in extended mode.
+        - Open question: :meth:`mfp_to_efp` fills an array with the returned
+          ``Quantity`` via ``numpy.full``; whether this yields floats or raises
+          depends on the astropy/numpy versions and has not been verified.
         """
         bs_slice_no, bs_phase = 15, 0.
         efp_slice_width = Globals.beta_slice.to(u.arcsec) / Globals.efp_arcsec_mm
@@ -548,14 +1271,72 @@ class Util:
 
     @staticmethod
     def efp_to_dfp(transform, affines, efp_points):
+        """Map EFP points to detector pixels: :meth:`efp_to_mfp` then :meth:`mfp_to_dfp`.
+
+        Parameters
+        ----------
+        transform : Transform
+            Slice/order transform supplying ``a, b`` and the echelle order.
+        affines : dict
+            ``Transform.affines`` (``{'m': ..., 'mi': ...}``).
+        efp_points : dict
+            ``{'efp_x': array, 'efp_y': array, 'efp_w': array}`` (mm, mm, um).
+
+        Returns
+        -------
+        dict
+            ``{'det_nos', 'dfp_x', 'dfp_y'}`` arrays -- GROUPED BY DETECTOR,
+            not in input order (see :meth:`mfp_to_dfp`).
+
+        Notes
+        -----
+        - Clean-up: the out-of-bounds flag from :meth:`efp_to_mfp` is
+          discarded.
+        """
         mfp_points, _ = Util.efp_to_mfp(transform, efp_points)
         dfp_points = Util.mfp_to_dfp(affines, mfp_points)
         return dfp_points
 
     @staticmethod
     def mfp_to_dfp(affines, mfp_points):
-        """ Note, mfp increases towards decreasing wavelength.  Det 1/3 are then at a shorter wavelength (larger
-        mfp) than dets 2/4.  Also, slice 1 is at the minimum of mfp_y.
+        """Assign mosaic-plane points to detectors by quadrant and convert to pixel coordinates.
+
+        Detector assignment::
+
+            det 1: mfp_x > 0 and mfp_y > 0      det 2: mfp_x < 0 and mfp_y > 0
+            det 3: mfp_x > 0 and mfp_y < 0      det 4: mfp_x < 0 and mfp_y < 0
+
+        then ``(dfp_x, dfp_y) = affines['m'][det - 1] @ (mfp_x, mfp_y, 1)``
+        (:meth:`apply_affine_transform`).  Because ``mfp_x`` increases towards
+        SHORTER wavelength, detectors 1/3 see shorter wavelengths than 2/4;
+        slice 1 is at minimum ``mfp_y`` so detectors 3/4 carry slices 1-14 and
+        1/2 carry 15-28 (module docstring of ``lmsdist``).
+
+        Parameters
+        ----------
+        affines : dict
+            ``Transform.affines``.
+        mfp_points : dict
+            ``{'mfp_x': array, 'mfp_y': array}`` in mm.
+
+        Returns
+        -------
+        dict
+            ``{'det_nos': int array, 'dfp_x': array, 'dfp_y': array}`` in
+            pixels.  Points are concatenated detector by detector (1, 2, 3, 4),
+            NOT in input order.
+
+        Notes
+        -----
+        - Inconsistency: output order differs from input order whenever the
+          points span more than one detector; callers that index the result
+          with the input index (``RayTrace.find_wavelength_bounds``,
+          :meth:`test_out_and_back`) are only correct by luck of ordering.
+        - Bug: points with ``mfp_x == 0`` or ``mfp_y == 0`` exactly belong to
+          no quadrant and are silently dropped, shortening the output.
+        - Inconsistency: no check that the pixel coordinates fall inside
+          0..2048; points in the inter-detector gap get negative or > 2048
+          pixel values on the assigned detector.
         """
         x = mfp_points['mfp_x']
         y = mfp_points['mfp_y']
@@ -585,8 +1366,31 @@ class Util:
 
     @staticmethod
     def dfp_to_mfp(affines, dfp_points):
-        """ Transform points from detector to the mosaic focal plane.  Note that all points are assumed
-        to come from the same detector (as specified in the first point).
+        """Convert detector pixel coordinates back to mosaic-plane mm using the inverse affines.
+
+        For each detector 1..4 in turn the points with that ``det_nos`` value
+        are transformed with ``affines['mi'][det - 1]`` and appended.
+
+        Parameters
+        ----------
+        affines : dict
+            ``Transform.affines``.
+        dfp_points : dict
+            ``{'det_nos': int array, 'dfp_x': array, 'dfp_y': array}``.
+
+        Returns
+        -------
+        dict
+            ``{'mfp_x': array, 'mfp_y': array}`` in mm, GROUPED BY DETECTOR
+            (input order is preserved only if ``det_nos`` is already sorted).
+
+        Notes
+        -----
+        - Inconsistency: the previous docstring claimed all points are assumed
+          to come from the first point's detector; the implementation handles
+          mixed detectors but re-orders the output.
+        - Clean-up: the ``det_nos`` array is compared against
+          ``numpy.full`` arrays instead of a scalar.
         """
         det_nos = dfp_points['det_nos']
         dfp_x = dfp_points['dfp_x']
@@ -610,9 +1414,37 @@ class Util:
 
     @staticmethod
     def efp_to_mfp(transform, efp_points):
-        """ Transform a point in the LMS entrance focal plane onto the detector mosaic.
-        Note that the transform will normally have been verified as non-vignetting
-        for this point in the EFP.
+        """Forward-project EFP points to the detector mosaic plane with one slice transform.
+
+        ``phase = waves_to_phases(efp_w, ech_ord)`` with the transform's own
+        ``slice_configuration['ech_ord']``, ``alpha = efp_x``, then
+        ``(mfp_x, mfp_y) = apply_svd_distortion(phase, alpha, a, b)``.  The
+        across-slice coordinate ``efp_y`` is NOT used: the transform is
+        specific to one slice, so the caller must have chosen the transform
+        whose slice contains ``efp_y`` (:meth:`efp_y_to_slice_no`).
+
+        Parameters
+        ----------
+        transform : Transform
+            With ``matrices['a']`` / ``['b']`` populated.
+        efp_points : dict
+            ``{'efp_x': array (mm), 'efp_y': array (mm, ignored), 'efp_w':
+            array (um)}``.
+
+        Returns
+        -------
+        mfp_points : dict
+            ``{'mfp_x': array, 'mfp_y': array}`` in mm.
+        oob : bool
+            :meth:`out_of_bounds` (``'mfp'``, +-40 mm) aggregate flag.
+
+        Notes
+        -----
+        - Inconsistency: the previous docstring said the transform "will
+          normally have been verified as non-vignetting"; no vignetting check
+          exists here (``cf_vig`` is only used for plotting in ``RayTrace``).
+        - Clean-up: ``efp_y`` is accepted and ignored; passing it suggests a
+          generality the function does not have.
         """
         config, matrices = transform.slice_configuration, transform.matrices
         ech_ord = config['ech_ord']
@@ -629,17 +1461,66 @@ class Util:
 
     @staticmethod
     def dfp_to_efp(transform, affines, dfp_points):
+        """Map detector pixels to the EFP: :meth:`dfp_to_mfp` then :meth:`mfp_to_efp`.
+
+        Parameters
+        ----------
+        transform : Transform
+            Slice/order transform (supplies ``ai, bi``, ``ech_ord`` and the
+            slice number used to set ``efp_y``).
+        affines : dict
+            ``Transform.affines``.
+        dfp_points : dict
+            ``{'det_nos', 'dfp_x', 'dfp_y'}``.
+
+        Returns
+        -------
+        dict
+            ``{'efp_x', 'efp_y', 'efp_w'}``; ``efp_y`` is the slice edge
+            (``slice_phase = 0``) for every point, see :meth:`mfp_to_efp`.
+        """
         mfp_points = Util.dfp_to_mfp(affines, dfp_points)
         efp_points = Util.mfp_to_efp(transform, mfp_points)
         return efp_points
 
     @staticmethod
     def mfp_to_efp(transform, mfp_points, slice_phase=0.):
-        """ Transform a point on the LMS detector (det_x, det_y) (w, efp_x, efp_y) onto the
-        detector mosaic (det_x, det_y).  Note that the transform will normally have been verified as non-vignetting
-        for this point in the EFP.
-        slice_phase: Intra-slice position is degenerate with wavelength. It can be passed explicitly here, with
-                     the default being to assume the centre of the slice in the EFP (slice_phase = 0.).
+        """Inverse-project mosaic-plane points to the EFP with one slice transform.
+
+        ``(phase, alpha) = apply_svd_distortion(mfp_x, mfp_y, ai, bi)``;
+        ``efp_w = phases_to_waves(phase, ech_ord)`` with the transform's
+        order; ``efp_x = alpha``.  The across-slice coordinate cannot be
+        recovered from the detector position (it is degenerate with
+        wavelength), so ``efp_y`` is set for ALL points to
+        ``slice_to_efp_y(fslice_no, slice_phase)`` using the transform's
+        decoded field slice number.
+
+        Parameters
+        ----------
+        transform : Transform
+            With ``matrices['ai']`` / ``['bi']`` populated.
+        mfp_points : dict
+            ``{'mfp_x': array, 'mfp_y': array}`` in mm.
+        slice_phase : float, optional
+            Across-slice fractional position assigned to every point.  Default
+            0.0, which is the slice EDGE at the boresight side (the previous
+            docstring called this the slice centre; the centre is 0.5).
+
+        Returns
+        -------
+        dict
+            ``{'efp_x': array (mm), 'efp_y': array (mm), 'efp_w': array (um)}``.
+
+        Notes
+        -----
+        - Inconsistency: default ``slice_phase = 0.`` documented as "centre of
+          the slice" but :meth:`slice_to_efp_y` places phase 0 at a slice
+          edge.
+        - Open question: ``numpy.full(alphas.shape, efp_y_val)`` is filled
+          with an astropy ``Quantity`` (mm); whether the result is a float
+          array or raises depends on the numpy/astropy versions in use.  Other
+          callers of ``slice_to_efp_y`` take ``.value`` first.
+        - Clean-up: ``lms_config`` is fetched and unused.
         """
         lms_config = transform.lms_configuration
         ech_ord = transform.slice_configuration['ech_ord']
@@ -661,7 +1542,24 @@ class Util:
 
     @staticmethod
     def sort(ref, unsort):
-        """ Re-order arrays in list 'unsort' using the index list from sorting array 'ref' in ascending order.
+        """Sort ``ref`` ascending and apply the same permutation to every array in ``unsort``.
+
+        Parameters
+        ----------
+        ref : numpy.ndarray
+        unsort : sequence of numpy.ndarray
+            Arrays of the same length as ``ref``.
+
+        Returns
+        -------
+        sorted_ref : numpy.ndarray
+        sorted_arrays : tuple of numpy.ndarray
+
+        Notes
+        -----
+        - Clean-up: not called anywhere in the repository.  Would be the
+          natural fix for the ``numpy.interp`` ordering issue noted in
+          :meth:`get_term_values`.
         """
         indices = np.argsort(ref)
         sort = []
@@ -671,6 +1569,33 @@ class Util:
 
     @staticmethod
     def lookup_transform_fit(config, prism_angle, transform_fits):
+        """Evaluate legacy 1-D (prism-angle) polynomial fits of the matrices for one slice.
+
+        ``transform_fits`` has shape ``(n_slices, n_mats, n_terms, n_terms,
+        n_polys)`` and each element polynomial is evaluated with
+        ``numpy.poly1d(...)(prism_angle)``.
+
+        Parameters
+        ----------
+        config : tuple
+            ``(ech_ord, slice_no, spifu_no)``; only ``slice_no`` (1-based) is
+            used.
+        prism_angle : float
+            Degrees.
+        transform_fits : numpy.ndarray
+            5-D coefficient array.
+
+        Returns
+        -------
+        tuple of numpy.ndarray
+            ``n_mats`` matrices of shape ``(n_terms, n_terms)``.
+
+        Notes
+        -----
+        - Clean-up: superseded by the bivariate
+          ``lmsdist_polyfit.PolyFit.make_fit_matrix``; no producer of the 5-D
+          array exists; not called anywhere.
+        """
         ech_ord, slice_no, spifu_no = config
         n_slices, n_mats, n_terms, _, n_polys = transform_fits.shape
         i_slice = int(slice_no - 1)
@@ -688,6 +1613,25 @@ class Util:
 
     @staticmethod
     def print_poly_transform(transform, **kwargs):
+        """Print the upper-left triangle (``col < n_terms - row``) of each matrix in a transform.
+
+        Parameters
+        ----------
+        transform : sequence of numpy.ndarray
+            Matrices in ``Globals.matrix_names`` order (``a, b, ai, bi``).
+        label : str, optional
+            Printed first; default ``'---'``.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        - Clean-up: expects a tuple of matrices, not a ``Transform`` object
+          (``lms_test.py`` passes a legacy tuple); the zero lower-right
+          triangle is skipped by construction.
+        """
         label = kwargs.get('label', '---')
         print(label)
         for matrix, mat_name in zip(transform, Globals.matrix_names):
@@ -703,8 +1647,39 @@ class Util:
 
     @staticmethod
     def find_fwhm_lin(x, y):
-        """ Find the FWMH of a profile by using linear interpolation to find where it crosses the half-power
-        level.  Referred to in summary files as the 'linear' FWHM etc.
+        """Find the half-maximum crossings of a 1-D profile by linear interpolation.
+
+        ``yh = max(y) / 2``; the first and last indices where ``y > yh`` are
+        found and the crossing abscissae ``xl`` (between ``il - 1`` and ``il``)
+        and ``xr`` (between ``ir`` and ``ir + 1``) are linearly interpolated.
+        The FWHM is ``xr - xl``.  Referred to as the "linear" FWHM in the
+        ``lmsiq`` summary files.
+
+        Parameters
+        ----------
+        x, y : numpy.ndarray
+            Sampled profile, ``x`` increasing.
+
+        Returns
+        -------
+        xl, xr : float
+            Left and right half-maximum positions.
+        yh : float
+            The half-maximum level.
+
+        Raises
+        ------
+        IndexError
+            If the profile is above half maximum at either end of the array
+            (``il == 0`` or ``ir == len(x) - 1``).
+
+        Notes
+        -----
+        - Open question: assumes a single-peaked profile; secondary peaks
+          above half maximum widen the result.
+        - Clean-up: duplicate of ``lmsiq_analyse.Analyse._find_fwhm_lin``
+          (which additionally returns an error flag); not called from
+          ``lmsdist``.
         """
         ymax = np.amax(y)
         yh = ymax / 2.0
@@ -718,6 +1693,64 @@ class Util:
 
     @staticmethod
     def solve_svd_distortion(x_in, y_in, x_out, y_out, order, inverse=False):
+        """Least-squares fit of the A, B (or AI, BI) distortion matrices by SVD pseudo-inverse.
+
+        Solves, for ``dim = order + 1`` (4) and every input point ``p``,
+
+        .. math::
+
+            x_{out,p} = \\sum_{r,c} A_{rc}\\, y_{in,p}^{\\,r}\\, x_{in,p}^{\\,c}, \\qquad
+            y_{out,p} = \\sum_{r,c} B_{rc}\\, y_{in,p}^{\\,r}\\, x_{in,p}^{\\,c}
+
+        with terms ``r + c > order`` excluded.  The design matrix ``m`` has
+        shape ``(dim*dim, n_pts)`` with row ``ind = r*dim + c`` equal to
+        ``y_in**r * x_in**c`` masked to zero where ``r + c > order`` (the
+        in-code comment says "lower diagonal"; it is the lower-right
+        anti-diagonal triangle).  ``numpy.linalg.svd(m)`` gives ``v, w, u``;
+        singular values with ``|w| < Globals.svd_cutoff`` (1e-7) are dropped
+        (their reciprocal set to 0, a message printed at debug level
+        ``'medium'`` if ``w > 1e-16``) and the coefficient vector is
+        ``a = x_out @ u.T @ diag(1/w) @ v.T``, reshaped row-major to
+        ``(dim, dim)``.  The masked design rows are exactly zero, so their
+        singular values are zero and the corresponding matrix elements come
+        out as zero.
+
+        This matches :meth:`apply_svd_distortion`, where ``A[r, c]`` multiplies
+        ``y**r * x**c``.
+
+        Parameters
+        ----------
+        x_in, y_in : numpy.ndarray
+            Input coordinates (forward: ``phase``, ``alpha``).
+        x_out, y_out : numpy.ndarray
+            Output coordinates (forward: ``mfp_x``, ``mfp_y`` in mm).
+        order : int
+            Maximum total polynomial degree (``Globals.svd_order - 1`` = 3).
+        inverse : bool, optional
+            If True swap the roles of in and out to fit ``AI, BI``
+            (``(mfp_x, mfp_y) -> (phase, alpha)``).
+
+        Returns
+        -------
+        amat, bmat : numpy.ndarray
+            ``(dim, dim)`` matrices.
+
+        Notes
+        -----
+        - Open question: the header comments state the routine was
+          "Converted to python from Ronayette's original IDL code by Temim,
+          21/2/17 ... see note on MIRI calibration"; the MIRI document is not
+          identified.  Given the MIRI heritage the licensing / attribution of
+          this routine should be confirmed before it is copied elsewhere.
+        - Inconsistency: ``mask`` and ``exponent`` are sized from
+          ``x_out.size`` even when ``inverse=True`` (harmless because all four
+          arrays have equal length).
+        - Clean-up: the in-code comment "Mask lower diagonal" describes the
+          ``r + c > order`` triangle; the term is misleading.
+        - Clean-up: the fit is unweighted and no residual statistic is
+          returned; ``RayTrace.create_svd_transforms`` recomputes residuals by
+          re-applying the transform.
+        """
         # @author Alistair Glasse + Tea Temim
         # Converted to python from Ronayette's original IDL code by Temim, 21/2/17
         #   1. Changed input parameters to allow use with any data set (Glasse)
@@ -775,6 +1808,43 @@ class Util:
 
     @staticmethod
     def test_out_and_back(filer, opticon, date_stamp):
+        """Round-trip test EFP -> MFP -> DFP -> MFP -> EFP for one slice.  Dead code.
+
+        Intended to pick the configuration centring 4.65 um
+        (:meth:`find_closest_transforms`), sample 30 points across the slice
+        length and wavelength range, project them out to detector pixels and
+        back, and print a table of the round-trip errors.
+
+        Parameters
+        ----------
+        filer : Filer
+        opticon : str
+        date_stamp : str
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        TypeError / ValueError
+            ``efp_y_to_slice_no([efp_y_cen])`` is called with a list and its
+            two scalar results are unpacked as lists.
+        TypeError
+            ``opt_transform['configuration']`` uses dict-style access on a
+            ``Transform`` object (and the key ``'slice'`` never existed in the
+            templates); :meth:`find_closest_transforms` also returns a tuple,
+            not a list indexable by slice number.
+        ValueError
+            ``mfp_points = Util.efp_to_mfp(...)`` binds the ``(dict, oob)``
+            tuple, which :meth:`mfp_to_dfp` cannot index.
+
+        Notes
+        -----
+        - Bug: multiple stale API references, listed above; cannot run.
+        - Clean-up: superseded by the ``evaluate_transforms`` block of
+          ``lmsdist.run`` and the AIT round-trip in ``lmsaiv_opt02``.
+        """
         print('lms_distort - Evaluating transforms')
 
         # Define EFP coordinates and target wavelength for spectrum

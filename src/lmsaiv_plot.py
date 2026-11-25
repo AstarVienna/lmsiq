@@ -1,3 +1,33 @@
+"""
+Matplotlib figures for the LMS AIT analyses (lmsaiv program).
+
+Plotting helpers used by ``lmsaiv_opt01`` (LMS-OPT-01: ``mosaic``,
+``histograms``, ``profiles``, ``slice_gaps``) and ``lmsaiv_opt02``
+(LMS-OPT-02: ``mosaic`` with trace overlays, ``det_traces``,
+``gap_data``).  All functions operate on ``lms_mosaic.Mosaic`` objects or
+on the trace / gap dictionaries built by the analyses; nothing is read
+from disk.
+
+**Output**: every function creates a figure and ends with ``plt.show()``,
+which blocks until the window is closed, and returns None.  No figure or
+file is returned or saved.
+
+Notes
+-----
+- Clean-up: return the ``Figure`` objects and drop ``plt.show()`` so the
+  plots can be embedded in notebooks / reports and the analyses can run
+  unattended.
+- Bug: in ``mosaic`` the ``overlay`` default is ``{}`` but the
+  ``ImageGrid`` / colour-bar branch tests ``overlay is None``, so it is
+  dead code and no colour bar is ever drawn.
+- Bug: ``mosaic`` with the ``sb`` (slice bounds) keyword and no overlay
+  fails with TypeError because ``det_idx`` is only set in the overlay
+  branch.
+- Inconsistency: overlay dictionaries spell the trace type 'iso_alpha' /
+  'iso_lambda' while the trace dicts use 'iso-alpha' / 'iso-lambda'.
+- Inconsistency: ``Opt02.dist`` passes a ``bounds`` keyword to
+  ``mosaic`` which is ignored (``det_traces`` does accept ``bounds``).
+"""
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -7,12 +37,41 @@ from lms_globals import Globals
 
 
 class Plot:
+    """Namespace of static plotting functions for the LMS AIT analyses."""
 
     def __init__(self):
+        """Do nothing; all methods are static."""
         return
 
     @staticmethod
     def gap_data(gap_data, det_thetas):
+        """Plot the inter-detector column gap versus row for detector pairs 1/2 and 3/4.
+
+        Two vertically stacked panes; each shows ``col_gap`` against ``u_mean``
+        (row) for the slices whose 'det_no' belongs to the pair, titled with the
+        fitted rotation ``theta +- theta_err`` in degrees.
+
+        Parameters
+        ----------
+        gap_data : dict
+            ``{slice_no: {'u_mean', 'col_gap', 'det_no', ...}}`` from
+            ``Opt02._find_detector_gaps``.
+        det_thetas : dict
+            ``{'12': (theta, theta_err) or None, '34': ...}``; a pane whose entry
+            is None is left empty.
+
+        Returns
+        -------
+        None
+            Shows the figure (blocking).
+
+        Notes
+        -----
+        - Bug (cosmetic): the x-label condition ``pane == 2 or pane == 3`` is
+          never true for a two-pane figure, so no 'Row' label appears.
+        - Slices with 'col_gap' None would break ``ax.plot``; the caller only
+          passes fitted gaps in practice.
+        """
         figsize = [8, 8]
         fig, axes = plt.subplots(nrows=2, ncols=1, figsize=figsize,
                                  sharex='all', squeeze=True)
@@ -41,13 +100,56 @@ class Plot:
 
     @staticmethod
     def mosaic(mosaic, **kwargs):
-        """ Plot the mosaic data structure (2 x 2 LMS images)
-        :param mosaic:
-        :param kwargs:  sb - Slice bounds (QTable format, det_no, slice_no, spifu_no, col, rowmin, rowmax)
-                        cmap - Colour map for image
-                        title - Plot title
-                        overlay - Overlay graphical elements (iso-alpha/beta traces etc.)
-        :return:
+        """Show the four detector images of a mosaic, optionally with slice bounds or trace overlays.
+
+        Without ``overlay`` a 2 x 2 grid is drawn with detector ``det_no`` (from
+        the per-HDU 'ID' keyword) in pane ``det_no - 1``, full 0..2048 extent,
+        common ``vmin`` / ``vmax`` (nanmin / nanmax over all HDUs unless given).
+        With ``overlay = {'type': 'det_traces', 'trace_type': 'iso_alpha' |
+        'iso_lambda', 'data': det_traces}`` one pane is created per (detector,
+        pupil slice) and zoomed to the traces: full width and ``v_fid +- 20``
+        rows for iso-alpha; ``v_fid +- 10`` columns by ``u_mean +- 80`` rows
+        (union over traces) for iso-lambda.  Sampled centroids are drawn as cyan
+        points and the polynomial fit ``Globals.polynomial(x, *popt)`` as a blue
+        line.
+
+        Parameters
+        ----------
+        mosaic : Mosaic
+            Image to display; ``mosaic.name`` goes into the super-title.
+        **kwargs
+            cmap : str, default 'hot'.
+            title : str, default '-'.
+            vmin, vmax : float, override the common colour scale.
+            mask : tuple (value, colour); pixels equal to ``value`` are drawn in
+            ``colour`` (used for slice maps with ``(0.0, 'black')``).
+            sb : dict with 'det_no', 'det_col', 'det_row_min', 'det_row_max'
+            arrays; slice-bound markers (red lower / green upper).
+            overlay : dict; trace overlay as described above.
+
+        Returns
+        -------
+        None
+            Shows the figure (blocking).
+
+        Notes
+        -----
+        - Bug: ``overlay`` defaults to ``{}`` so ``if overlay is None`` is never
+          true; the ``ImageGrid`` branch with a shared colour bar is dead and the
+          ``plt.subplots`` branch is always used.
+        - Bug: ``sb`` without an overlay uses ``det_idx`` (None) -> TypeError.
+        - Bug: unused overlay panes are removed with ``axes[ax_idx]`` on the 2-D
+          ``axes`` array returned by ``plt.subplots`` (IndexError when
+          ``n_rows > 1`` and ``n_axes < n_panes``), and the pane-count formula
+          ``n_rows = n_axes // 3 + 1`` with two columns appears to allocate too
+          few panes for some trace counts (e.g. five).
+        - Inconsistency: 'iso_alpha' (overlay) versus 'iso-alpha' (trace 'type').
+        - Open question: with ``origin='lower'`` and an ``extent`` starting at
+          ``y_min - 1.5`` the image appears offset by one row relative to the
+          overlaid coordinates; not verified.
+        - Clean-up: the ``bounds`` keyword passed by ``Opt02.dist`` is ignored;
+          ``ax_bounds`` is initialised twice and ``det_idx`` is only meaningful in
+          the overlay branch.
         """
         det_idx = None
 
@@ -200,6 +302,38 @@ class Plot:
 
     @staticmethod
     def det_traces(alpha_traces, lambda_traces, config_id, **kwargs):
+        """Draw the fitted iso-alpha and iso-lambda trace polynomials on a 2 x 2 detector grid.
+
+        Iso-alpha fits are drawn in blue (``row = poly(col)`` over ``u_mean +-
+        1024``), iso-lambda fits in red (``col = poly(row)`` over ``u_mean +-
+        40``), each in the pane of its detector.  Optional intersection points
+        are drawn as black dots.  No image is shown.
+
+        Parameters
+        ----------
+        alpha_traces : list of dict
+            Iso-alpha traces (keys 'det_no', 'type', 'popt', 'u_mean').
+        lambda_traces : list of dict
+            Iso-lambda traces.
+        config_id : str
+            LMS configuration id used in the super-title only.
+        **kwargs
+            bounds : tuple (xmin, xmax, ymin, ymax); default the full detector
+            ``Globals.det_format``.
+            coords : dict with 'det_no', 'row', 'col' lists (one entry of the
+            ``Opt02._find_trace_intersections`` output).
+
+        Returns
+        -------
+        None
+            Shows the figure (blocking).
+
+        Notes
+        -----
+        - Open question: the traces are not filtered by ``config_id``; all
+          supplied traces are drawn whatever their 'lms_config_id'.
+        - Clean-up: the axis limits are re-applied for every trace.
+        """
         fig = plt.figure(figsize=(8, 7))
         fig.suptitle('Configuration ' + config_id)
         grid = ImageGrid(fig, 111,
@@ -252,6 +386,24 @@ class Plot:
 
     @staticmethod
     def histograms(mosaic):
+        """Plot a 200-bin histogram of the pixel values of each detector HDU.
+
+        Parameters
+        ----------
+        mosaic : Mosaic
+            Four HDUs, drawn in a 2 x 2 grid in list order (not by 'ID').
+
+        Returns
+        -------
+        None
+            Shows the figure (blocking).
+
+        Notes
+        -----
+        - Inconsistency: panes follow ``hdu_list`` order (index ``i``) whereas
+          ``mosaic`` uses the 'ID' keyword; the two agree for ToySim data only
+          (see ``Filer.read_mosaic``).
+        """
         n_bins = 200
         fig, axs = plt.subplots(2, 2, sharex=True, sharey=True, tight_layout=True)
         fig.suptitle(mosaic.name)
@@ -265,6 +417,25 @@ class Plot:
 
     @staticmethod
     def slice_gaps(gap_list):
+        """Plot the measured inter-slice gap against slice number, one pane per detector.
+
+        Parameters
+        ----------
+        gap_list : list of tuple
+            ``(det_no, slice_no_a, slice_no_b, col_min, col_max, gap)`` from
+            ``Opt01._find_gaps``; ``gap`` (pixels) is plotted against
+            ``slice_no_a``.
+
+        Returns
+        -------
+        None
+            Shows the figure (blocking).
+
+        Notes
+        -----
+        - Clean-up: the design gap ``Globals.intra_slice_gap`` (20 pixels) is
+          not drawn for comparison.
+        """
         gaps = np.array(gap_list)
         figsize = [8, 8]
         fig, axes = plt.subplots(nrows=2, ncols=2, figsize=figsize,
@@ -288,7 +459,29 @@ class Plot:
 
     @staticmethod
     def profiles(profiles, nax_rows=2, nax_cols=2):
-        """ Plot multiple profile tuples.
+        """Plot along-column signal profiles with their detected slice edges, one pane per detector.
+
+        Parameters
+        ----------
+        profiles : list of tuple
+            ``(label, colour, det_no, profile_column, vals, pts)`` as built by
+            ``Opt01._find_slices``: ``vals`` is the raw 9-column mean profile
+            versus row, ``pts`` a list of ``(row, cut_level)`` edge points drawn
+            as 'x' markers in the profile colour.
+        nax_rows, nax_cols : int, optional
+            Grid shape; default 2 x 2, pane index ``det_no - 1``.
+
+        Returns
+        -------
+        None
+            Shows the figure (blocking).
+
+        Notes
+        -----
+        - Inconsistency: the legacy ``Opt01.flood_stats`` builds profile tuples
+          with a different layout ``(title, x_indices, y_signal, [on_points,
+          off_points])`` which this function cannot unpack.
+        - Clean-up: ``label`` is unpacked but not used (no legend).
         """
         figsize = [8, 8]
         n_axes = nax_rows * nax_cols
