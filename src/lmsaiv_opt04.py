@@ -50,28 +50,36 @@ class Opt04:
 
     @staticmethod
     def ghost(title, as_built, **kwargs):
-        """Intended LMS-OPT-04 difference-image analysis (does not run).
+        """LMS-OPT-04 ghost difference-image analysis (stub: returns immediately).
+
+        Prints '!! Analysis not yet available !!' and returns ``as_built``
+        unchanged.  The code after the ``return`` is an unreachable draft of a
+        target-minus-reference difference image for 'lms_opt_04' data.
 
         Parameters
         ----------
         title : str
             Registry title; unused.
         as_built : dict
-            'As built' dictionary; not modified.
+            'As built' dictionary; returned unchanged.
         **kwargs
             Ignored.
 
         Returns
         -------
-        None
-            Bug: ``OptTests.run`` expects the updated ``as_built`` dict.
+        dict
+            ``as_built``.
 
         Notes
         -----
-        - Bug: ``inc_tags + ref_step`` raises TypeError (list + str).
+        - Bug (unreachable draft): ``inc_tags + ref_step`` raises TypeError
+          (list + str).
         - See the module notes.
         """
-        test_name = 'lms_opt_03'
+        print('!! Analysis not yet available !!')
+        return as_built
+
+        test_name = 'lms_opt_04'
         opticon = Globals.nominal
 
         ref_step = 'Step1'

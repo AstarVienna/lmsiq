@@ -385,35 +385,55 @@ class Plot:
         return
 
     @staticmethod
-    def histograms(mosaic):
-        """Plot a 200-bin histogram of the pixel values of each detector HDU.
+    def histograms(mosaic, n_bins=200, range=None, make_labels=True):
+        """Plot a histogram of the pixel values of each detector HDU in a 2 x 2 grid.
 
         Parameters
         ----------
         mosaic : Mosaic
-            Four HDUs, drawn in a 2 x 2 grid in list order (not by 'ID').
+            Four HDUs, drawn in list order (not by 'ID').
+        n_bins : int, optional
+            Number of histogram bins.  Default 200.
+        range : tuple of float, optional
+            ``(lower, upper)`` histogram range passed to ``Axes.hist``; None
+            (default) uses the data range.  ``Rad04.pix_flat`` uses
+            (0.99, 1.01).
+        make_labels : bool, optional
+            Accepted but not used.
 
         Returns
         -------
-        None
-            Shows the figure (blocking).
+        tuple
+            ``(n_bins, n_pts)`` where ``n_pts`` is the number of values counted
+            in the histogram of the last detector drawn.  The 8 x 8 inch figure
+            is shown (blocking) before returning.
 
         Notes
         -----
         - Inconsistency: panes follow ``hdu_list`` order (index ``i``) whereas
           ``mosaic`` uses the 'ID' keyword; the two agree for ToySim data only
           (see ``Filer.read_mosaic``).
+        - Clean-up: ``n_pts`` is overwritten per detector, so only the last
+          detector's count is returned; ``hist_pars``, ``det_no`` and
+          ``n_vals`` (the NaN count) are computed but unused; ``make_labels``
+          is ignored; the parameter name ``range`` shadows the builtin.
         """
-        n_bins = 200
-        fig, axs = plt.subplots(2, 2, sharex=True, sharey=True, tight_layout=True)
+
+        fig_size = [8, 8]
+        fig, axs = plt.subplots(2, 2, figsize=fig_size,
+                                sharex=True, sharey=True, tight_layout=True)
         fig.suptitle(mosaic.name)
+        hist_pars = {}
 
         for i, hdu in enumerate(mosaic.hdu_list):
+            det_no = i + 1
             ax_row, ax_col = int(i / 2), i % 2
             vals = hdu.data.flatten()
-            axs[ax_row, ax_col].hist(vals, bins=n_bins)
+            n_vals = np.count_nonzero(np.isnan(vals))
+            bin_pts, _, _ = axs[ax_row, ax_col].hist(vals, bins=n_bins, range=range)
+            n_pts = np.sum(np.array(bin_pts))
         plt.show()
-        return
+        return n_bins, n_pts
 
     @staticmethod
     def slice_gaps(gap_list):

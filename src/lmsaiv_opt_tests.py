@@ -55,10 +55,13 @@ Notes
 """
 from lms_globals import Globals
 from lms_filer import Filer
+from lmsaiv_rad01 import Rad01
+from lmsaiv_rad04 import Rad04
 from lmsaiv_opt01 import Opt01
 from lmsaiv_opt02 import Opt02
 from lmsaiv_opt03 import Opt03
 from lmsaiv_opt04 import Opt04
+from lmsaiv_opt09 import Opt09
 
 
 class OptTests:
@@ -83,6 +86,10 @@ class OptTests:
     def __init__(self):
         """Populate the class-level ``optical_test`` registry.
 
+        Upstream note: the key comprises 'data_source_' + 'analysis_type' (e.g.
+        'lms_opt_01_' + 'fov'), acknowledging that an analysis project (Jupyter
+        notebook) may use data from several tests.
+
         The dictionary literal is assigned to ``OptTests.optical_test`` (a class
         attribute), so every instance shares the same registry and creating a
         second instance simply rebuilds it.
@@ -91,15 +98,18 @@ class OptTests:
         -----
         - Clean-up: the registry could be a class-level constant; building it in
           ``__init__`` forces callers (``lmsaiv.py``) to instantiate the class
-          before calling the static ``run`` method.
+          before calling the static ``get_test`` method.
+        - Open question: an 'lms_rad_03_inst_bgd' (instrument background) entry
+          is present but commented out; there is no ``Rad03`` module yet.
         """
-        # Test dictionary, note that the key comprises 'data_source_' + 'analysis' (eg 'lms_opt_01_' + 'fov'.  This
-        # supports the fact that an analysis project (Jupyter notebook) may use data from several tests.
-        optical_test = {'lms_opt_01_fov': (Opt01.fov, 'Field of view and RSRF'),
+        optical_test = {'lms_rad_01_dark': (Rad01.dark, 'Dark current'),
+                        # 'lms_rad_03_inst_bgd': (Rad03.inst_bgd, 'Instrument background')
+                        'lms_rad_04_pix_flat': (Rad04.pix_flat, 'Pixel flat field'),
+                        'lms_opt_01_fov': (Opt01.fov, 'Field of view and RSRF'),
                         'lms_opt_02_dist': (Opt02.dist, 'Distortion transforms and enslitted profiles'),
-                        'lms_opt_03_psf': (Opt03.psf, 'Monochomatic Point and line spread function'),
+                        'lms_opt_03_psf': (Opt03.psf, 'Monochromatic Point and line spread function'),
                         'lms_opt_04_ghost': (Opt04.ghost, 'Deep imaging of any ghosts detected in LMS-OPT-03'),
-                        # 'lms_opt_08': (OptTests.lms_opt_08, 'Out-of-field straylight'),
+                        'lms_opt_09_sky': (Opt09.sky, 'Leiden sky')
                         }
         OptTests.optical_test = optical_test
         return
@@ -120,8 +130,8 @@ class OptTests:
         return text
 
     @staticmethod
-    def run(cap_name, **kwargs):
-        """Run one registered analysis project and persist the 'as built' object.
+    def get_test(cap_name, **kwargs):
+        """Look up a registered analysis project and list its test data files.
 
         Parameters
         ----------
@@ -130,15 +140,14 @@ class OptTests:
             (``cap_name[0:10]``, e.g. 'lms_opt_01') are used as the file-name tag
             that selects the test data files listed for information.
         **kwargs
-            Forwarded unchanged to the registered analysis method (e.g.
-            ``overwrite_as_built_traces`` for ``Opt02.dist``; ``do_plot`` is
-            accepted but ignored by ``Opt01.fov``).
+            Accepted and ignored (``lmsaiv.main`` passes ``do_plot=False``).
 
         Returns
         -------
-        None
-            The updated 'as built' dictionary is written to
-            ``Globals.as_built_file`` + '.pkl' rather than returned.
+        tuple
+            ``(method, title)``: the static analysis method, to be called as
+            ``method(title, as_built)``, and its title.  Loading and saving
+            the 'as built' object is the caller's job (``lmsaiv.main``).
 
         Raises
         ------
@@ -149,17 +158,10 @@ class OptTests:
 
         Notes
         -----
-        - The 'as built' pickle is loaded from ``Globals.as_built_file``; a
-          FileNotFoundError is caught and an empty dict is used instead, so the
-          first analysis in the chain (LMS-OPT-01) creates the object and later
-          analyses (LMS-OPT-02 requires ``as_built['slice_map_nominal']``) extend
-          it.
         - The file list is only printed; the analysis methods re-read the data
           with their own tags.
-        - Bug: the return value of ``method`` is pickled without checking that it
-          is a dict; ``Opt04.ghost`` returns None (see module notes).
         - Inconsistency: the ``cap_name[0:10]`` slice assumes the ten-character
-          'lms_opt_NN' test-name format.
+          'lms_xxx_NN' test-name format.
         """
         if cap_name not in OptTests.optical_test.keys():
             print()
@@ -173,11 +175,5 @@ class OptTests:
             print("- {:s}".format(file))
         print()
 
-        try:            # Import or create new 'as built' object.
-            as_built = Filer.read_pickle(Globals.as_built_file)
-        except FileNotFoundError:
-            as_built = {}
         method, title = OptTests.optical_test[cap_name]
-        as_built = method(title, as_built, **kwargs)
-        Filer.write_pickle(Globals.as_built_file, as_built)
-        return
+        return method, title

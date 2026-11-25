@@ -254,7 +254,7 @@ class Globals:
     lms_config_template = {'opticon': None, 'pri_ang': None, 'ech_ang': None}
     #: Keys of a per-slice configuration dictionary (encoded slice number, echelle order, wavelength bounds / um);
     #: written as ``SLICE_NO``, ``ECH_ORD``, ``W_MIN``, ``W_MAX`` in each ``SLICE_n`` extension header.
-    slice_config_template = {'slice_no': None, 'ech_ord': None, 'w_min': None, 'w_max': None}   # , 'pslice_no': None
+    slice_config_template = {'slice_no': None, 'ech_ord': None, 'w_min': None, 'w_max': None}
 
     # Transform parameters
     #: Order of the (upper-triangular) distortion transform matrices A, B, AI, BI (4 x 4, cubic).

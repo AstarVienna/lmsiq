@@ -149,67 +149,6 @@ class OptTools:
         return moscopy
 
     @staticmethod
-    def dark_stats(mosaics):
-        """Print dark-frame statistics for each detector of each mosaic.
-
-        For every mosaic the integration parameters are read from the primary
-        header ('HIERARCH ESO DET DIT' seconds, 'HIERARCH ESO DET NDIT'), and for
-        each detector HDU the gain is read from 'HIERARCH ESO DET3 CHIP GAIN'
-        (el/ADU, stored as a string by ToySim and cast with ``float``).  The
-        printed columns are::
-
-            median [DN]      = np.median(data)
-            stdev  [DN]      = np.std(data)
-            median [el/sec]  = median * gain / dit
-            Rd_Noise [el]    = stdev * gain / sqrt(2 / ndit)
-
-        Parameters
-        ----------
-        mosaics : list of Mosaic
-            Dark exposures (LMS-OPT-01 '_dark' files).
-
-        Returns
-        -------
-        None
-            Results are printed only.
-
-        Notes
-        -----
-        - Open question: the dark current uses ``dit`` alone; if the frame is a
-          sum over ``ndit`` sub-integrations the divisor should be ``dit * ndit``
-          (``t_int`` is computed but only printed).
-        - Open question: the sqrt(2 / ndit) factor is appropriate for the
-          difference of two frames, not for a single frame's standard deviation.
-        - Inconsistency: the header line formats ``ndit`` with '{:d}', which
-          raises ValueError if the keyword is stored as a float.
-        - Clean-up: return the statistics (per detector) instead of printing, so
-          they can be used as QC values.
-        """
-        for mosaic in mosaics:
-            dit = mosaic.primary_hdr['HIERARCH ESO DET DIT']
-            ndit = mosaic.primary_hdr['HIERARCH ESO DET NDIT']
-            t_int = dit * ndit
-
-            print()
-            print("File = {:s}".format(mosaic.name))
-            fmt = "Signal distribution statistics, ndit= {:d} x dit= {:3.1f} sec, integration time = {:6.1f}"
-            print(fmt.format(ndit, dit, t_int))
-            fmt = "{:>8s},{:>10s},{:>10s},{:>10s},{:>10s}"
-            print(fmt.format('Detector', 'median', 'stdev', 'median', 'Rd_Noise'))
-            print(fmt.format('No.', 'DN', 'DN', 'el/sec.', 'el.'))
-            fmt = "{:8d},{:10.3f},{:10.3f},{:10.3f},{:10.3f}"
-
-            for i, hdu in enumerate(mosaic.hdu_list):
-                el_adu = float(hdu.header['HIERARCH ESO DET3 CHIP GAIN'])
-                median = np.median(hdu.data)
-                stdev = np.std(hdu.data)
-                median_current = median * el_adu / dit
-                rd_noise = stdev * el_adu / math.sqrt(2. / ndit)
-                text = fmt.format(i + 1, median, stdev, median_current, rd_noise)
-                print(text)
-        return
-
-    @staticmethod
     def transform_detector_image(mosaic, det_no, xy_pix=(0, 0), angle=0.0):
         """Rotate the image of one detector in a mosaic (to emulate a misaligned detector).
 

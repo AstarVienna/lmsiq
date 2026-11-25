@@ -14,7 +14,7 @@ of two simulators:
   ``wcu_lms`` / ``wcu_lms_extended`` modes; writes
   ``../data/test_scopesim/{cfg_id}_o###.fits``.
 
-The test name (``'lms_opt_01'``), the simulator switch and the debug level
+The test name (``'lms_opt_02'``), the simulator switch and the debug level
 are hard-coded inside :func:`run`; there is no command-line interface.
 Optionally (``redownload_metis = True``) the ScopeSim instrument packages
 METIS, ELT and Armazones are downloaded first.
@@ -44,7 +44,7 @@ import scopesim as sim
 def run():
     """Run the LMS performance-test simulation for one hard-coded test.
 
-    Simulate the observations of ``test_name`` (``'lms_opt_01'``) with either
+    Simulate the observations of ``test_name`` (``'lms_opt_02'``) with either
     ScopeSim or Alistair's bespoke 'ToySim' simulator.  ToySim uses the LMS
     entrance-focal-plane to detector transforms calculated by ``lmsdist.py``,
     the Zemax LMS PSFs (currently including the significant optical design
@@ -79,7 +79,7 @@ def run():
     if redownload_metis:
         sim.download_packages(["METIS", "ELT", "Armazones"], release="latest")
     # ============================== Set simulator parameters here ====================================
-    test_name = 'lms_opt_01'        # Name of test to simulate, e.g 'lms_opt_01'
+    test_name = 'lms_opt_02'        # Name of test to simulate, e.g 'lms_opt_01'
     use_scope_sim = False
 
     base_debug_level = 'medium'

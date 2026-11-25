@@ -67,6 +67,7 @@ Notes
 
 @author: Alistair Glasse
 """
+import math
 import astropy.units as u
 import numpy as np
 from astropy.convolution import Box1DKernel
@@ -104,76 +105,53 @@ class Opt01:
 
     @staticmethod
     def fov(title, as_built, **kwargs):
-        """Run the LMS-OPT-01 analysis: dark statistics, then FOV / slice map / RRF.
+        """Run the LMS-OPT-01 analysis: field of view, slice map and relative response.
 
-        Calls ``_analyse_darks`` and ``_find_fov(as_built)`` and returns the
-        updated 'as built' dictionary.
+        Calls ``calculate_fov(as_built)`` and returns the updated 'as built'
+        dictionary.  The dark-frame statistics that used to run first have
+        moved to LMS-RAD-01 (``lmsaiv_rad01.Rad01.dark``).
 
         Parameters
         ----------
         title : str
             Analysis title from the ``OptTests`` registry.  Not used.
         as_built : dict
-            'As built' dictionary loaded by ``OptTests.run``; extended in place
-            with 'slice_map_<nom|ext><stepN>' entries.
+            'As built' dictionary loaded by ``lmsaiv.main``; extended in place
+            with one slice-map entry per configuration group.
         **kwargs
-            Accepted for interface compatibility; ignored (``do_plot`` from
-            ``lmsaiv.py`` has no effect, plotting is controlled by
-            ``Globals.debug_level``).
+            Accepted for interface compatibility; ignored (``lmsaiv.main``
+            passes none; plotting is controlled by ``Globals.debug_level``).
 
         Returns
         -------
         dict
             ``as_built`` with the slice-map entries added.
         """
-        Opt01._analyse_darks()
-        Opt01._find_fov(as_built)
+        as_built = Opt01.calculate_fov(as_built)
         print('Done')
         return as_built
 
     @staticmethod
-    def _analyse_darks():
-        """Read the LMS-OPT-01 dark frames and print their statistics.
-
-        Reads all mosaics whose file names contain ['lms_opt_01', '_dark'] from
-        ``Filer.test_data_folder`` and passes them to ``OptTools.dark_stats``.
-        At debug level 'low' or higher the first dark is shown with
-        ``Plot.mosaic`` and ``Plot.histograms``.
-
-        Returns
-        -------
-        None
-
-        Notes
-        -----
-        - Bug: if no dark files are found ``darks`` is empty and ``darks[0]``
-          raises IndexError at debug level 'low'.
-        """
-        inc_tags = ['lms_opt_01', '_dark']
-        darks = Filer.read_mosaic_list(Filer.test_data_folder, inc_tags)
-        OptTools.dark_stats(darks)
-        if Globals.is_debug('low'):
-            title = 'Dark'
-            Plot.mosaic(darks[0], title=title)
-            Plot.histograms(darks[0])
-        return
-
-    @staticmethod
-    def _find_fov(as_built):
+    def calculate_fov(as_built):
         """Coadd the flood flats per configuration group and derive slice map, gaps, FOV and RRF.
+
+        Upstream note: "This code is intended to be pasted directly into a
+        notebook."
 
         For each optical configuration and step group in::
 
-            {Globals.nominal:  [['2', '3'], ['5', '6'], ['8', '9']],
-             Globals.extended: [['11', '12', '13']]}
+            {Globals.nominal:  [['2', '3'], ['9', '10'], ['12', '13']],
+             Globals.extended: [['5', '6', '7']]}
 
         the first mosaic matching ['lms_opt_01', 'flat_bb', 'stepN'] is read for
         each step and coadded (``Mosaic.copy`` then ``Mosaic.add``) into a flood
         image named 'Coadded steps N,M'.  Then, in order: ``_find_slices(flood,
         smooth=3, snr_cut=10)``, ``_find_gaps``, ``_make_slice_map``, a slice-map
         plot, ``_calculate_fov`` and ``_find_rrf``.  The slice map is stored as
-        ``as_built['slice_map_' + opticon[0:3] + step_tag]`` where ``step_tag``
-        is that of the last step in the group.
+        ``as_built[slice_map.name]``, where ``_make_slice_map`` builds the name
+        from the flood's primary header as
+        'slice_map_<nom|ext>_eo<echelle order>_ea<p|n><1000 x |echelle angle|>'
+        (e.g. 'slice_map_nom_eo27_eap01234').
 
         Parameters
         ----------
@@ -183,22 +161,24 @@ class Opt01:
         Returns
         -------
         dict
-            ``as_built`` (the caller ``fov`` ignores the return value and uses the
-            in-place update).
+            ``as_built``.
 
         Notes
         -----
-        - Bug: the stored key ('slice_map_nomstep3', ...) does not match the
-          'slice_map_nominal' key read by ``Opt02.dist``.
+        - Clean-up: ``slice_map_key`` ('slice_map_<nom|ext>_stepN') is computed
+          but unused; the map's own name is the key.
+        - Inconsistency: the coadded flood keeps the primary header of the
+          first step in the group, so the slice-map name records that step's
+          echelle order and angle only.
         - Bug: a missing flat file makes ``read_mosaic_list(...)[0]`` raise
-          IndexError; both nominal and extended groups must be present.
+          IndexError; every step of every group must be present.
         - Open question: step tags are matched as sub-strings ('step1' would also
           match 'step10'..'step19'); the steps used here avoid the collision.
         - Clean-up: the gap list from ``_find_gaps`` is only plotted, never
           stored; ``Plot.mosaic`` of the slice map is unconditional and blocks.
         """
-        config_tag = {Globals.nominal: [['2', '3'], ['5', '6'], ['8', '9']],
-                      Globals.extended: [['11', '12', '13']]}
+        config_tag = {Globals.nominal: [['2', '3'], ['9', '10'], ['12', '13']],
+                      Globals.extended: [['5', '6', '7']]}
         for opticon in config_tag:
             coadd_title = ''
             for step_list in config_tag[opticon]:
@@ -228,7 +208,8 @@ class Opt01:
                 Plot.mosaic(slice_map, title='Slice Map', cmap='hsv', mask=(0.0, 'black'))
                 Opt01._calculate_fov(slice_map)
                 Opt01._find_rrf(flood, slice_map)
-                as_built['slice_map_' + opticon[0:3] + step_tag] = slice_map
+                slice_map_key = 'slice_map_' + opticon[0:3] + '_' + step_tag
+                as_built[slice_map.name] = slice_map
         return as_built
 
     @staticmethod
@@ -574,7 +555,13 @@ class Opt01:
           broadcast correctly.
         - The quadratic requires at least three profile columns; four are used.
         """
-        slice_map = mosaic.copy(clear_data=True, copy_name='slice_map')
+        opticon = mosaic.primary_hdr['HIERARCH AIT OPTICON']
+        ech_order = mosaic.primary_hdr['HIERARCH ACHG REF_ECH_ORD']
+        ech_ang = mosaic.primary_hdr['HIERARCH AIT ECH_ANG']
+        ea_sign = 'n' if ech_ang < 0. else 'p'
+        ea_tag = "{:s}{:05d}".format(ea_sign, int(math.fabs(1000.*ech_ang)))
+        map_name = "slice_map_{:3s}_eo{:d}_ea{:s}".format(opticon[0:3], ech_order, ea_tag)
+        slice_map = mosaic.copy(clear_data=True, copy_name=map_name)
         for hdu in slice_map.hdu_list:
             det_no = int(hdu.header['ID'])
             det_no_idxs = slice_coords['det_nos'] == det_no
@@ -635,7 +622,6 @@ class Opt01:
           arcsec2, aspect ratio between 1:1 and 2:1) is only made in the legacy
           ``flood_stats``.
         """
-        # _, pri_hdu, hdu_list = slice_map
         opticon = slice_map.primary_hdr['HIERARCH AIT OPTICON']
         n_rows, n_cols = Globals.det_format
         n_illum = 0

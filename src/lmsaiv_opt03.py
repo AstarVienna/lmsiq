@@ -48,6 +48,7 @@ Notes
 import math
 
 import numpy as np
+from lms_globals import Globals
 from lmsaiv_opt_tools import OptTools
 from lmsaiv_plot import Plot
 from lms_filer import Filer
@@ -61,44 +62,48 @@ class Opt03:
         return
 
     @staticmethod
-    def psf(test_name, title, as_built, **kwargs):
-        """Intended LMS-OPT-03 analysis of laser + single-pinhole data (does not run).
+    def psf(test_name, as_built, **kwargs):
+        """LMS-OPT-03 laser + single-pinhole PSF analysis (stub: returns immediately).
 
-        As written: read the darks, print ``OptTools.dark_stats``, plot them,
-        then for each 'flood' mosaic compute the legacy slice map with
-        ``OptTools.flood_stats`` (non-existent) and a 1000 K black-body relative
-        response with the same approximate 0.08 um dispersion as
-        ``lmsaiv_opt01.Opt01._find_rrf``.
+        Upstream description: "Analysis of laser + single pinhole data to
+        characterise the monochromatic point source."  The method prints
+        '!! Analysis not yet available !!' and returns ``as_built`` unchanged.
+        The code after the ``return`` is an unreachable draft (dark statistics,
+        legacy ``flood_stats`` slice map, approximate relative response).
 
         Parameters
         ----------
         test_name : str
-            File-name tag (e.g. 'lms_opt_03').  Not supplied by ``OptTests.run``.
-        title : str
-            Plot title.
+            File-name tag (e.g. 'lms_opt_03').  ``lmsaiv.main`` actually passes
+            the registry title here (see Notes).
         as_built : dict
-            'As built' dictionary; would receive 'slice_map'.
+            'As built' dictionary; returned unchanged.
         **kwargs
-            ``do_plot`` : bool, default True (later overwritten by a hard-coded
-            True).
+            ``do_plot`` : bool, read by the unreachable draft only.
 
         Returns
         -------
         dict
-            ``as_built`` (never reached).
+            ``as_built``.
 
         Notes
         -----
-        - See the module notes for the list of defects; the first statement,
-          ``Filer.read_mosaic_list(inc_tags)``, already fails with IndexError
-          inside ``read_mosaic_list`` (``args[0]`` on an empty ``args``).
-        - Clean-up: the hard-coded ``do_plot = True`` overrides the keyword.
+        - Inconsistency: the signature has no ``title`` parameter, but the
+          caller uses ``method(title, as_built)``, so the title arrives as
+          ``test_name``.
+        - Bug (unreachable draft): ``title`` is undefined,
+          ``OptTools.dark_stats`` no longer exists (moved to
+          ``Rad01.dark_stats``), and ``Filer.read_mosaic_list(inc_tags=...)``
+          uses a keyword the function does not accept.
         """
+        print('!! Analysis not yet available !!')
+        return as_built
+
         inc_tags = [test_name, 'nom_dark']
-        darks = Filer.read_mosaic_list(inc_tags)
+        darks = Filer.read_mosaic_list(Filer.test_data_folder, inc_tags)
         do_plot = kwargs.get('do_plot', True)
-        if do_plot:
-            Plot.mosaic(darks[0], title=title)
+        if Globals.is_debug('low'):
+            Plot.mosaic(darks[0], title=darks[0].name)
             Plot.histograms(darks[0])
         OptTools.dark_stats(darks)
 

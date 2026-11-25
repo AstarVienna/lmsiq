@@ -38,9 +38,6 @@ Under ``../output/iq/<opticon>/<date_stamp>/``:
 
 Notes
 -----
-* Bug: :meth:`Cuber.build` calls ``dist_filer.set_configuration('distortion',
-  opticon)`` with two arguments; :meth:`lms_filer.Filer.set_configuration` requires
-  three, so the method raises ``TypeError`` at its first statement after setup.
 * Bug: :meth:`lmsiq_analyse.Analyse.extract_cube_strips` is called on down-sampled
   (detector-pixel) images with ``oversampling = 4``, so each cube column sums 10
   detector columns rather than the 2.5 pixel slice width the comment intends.
@@ -106,8 +103,8 @@ class Cuber:
 
         Flow:
 
-        1. ``dist_filer.set_configuration('distortion', opticon)`` (raises at HEAD, see
-           Notes) and load the ``lmsdist`` traces from ``dist_filer.trace_file``.
+        1. ``dist_filer.set_configuration('distortion', opticon, is_ait_data=False)``
+           and load the ``lmsdist`` traces from ``dist_filer.trace_file``.
         2. ``oversampling = int(Detector.det_pix_size / im_pix_size)`` = 4;
            ``n_runs = 2 if mc_bounds is None else mc_bounds[1] - mc_bounds[0] + 3``
            (perfect + design + MC instances); ``n_cube_rows = 128 / oversampling`` = 32.
@@ -163,7 +160,6 @@ class Cuber:
 
         Notes
         -----
-        * Bug: two-argument ``set_configuration`` call (see module Notes).
         * Bug: ``extract_cube_strips`` receives down-sampled images but
           ``oversampling = 4`` (module Notes).
         * Bug: ``field_series`` is None if ``slice_tgt`` is not in the slice range
@@ -190,7 +186,7 @@ class Cuber:
         ds_dict, lsf_data = None, None
         axes = ['across-slice', 'along-slice']
         opticon = data_identifier['optical_path']
-        dist_filer.set_configuration('distortion', opticon)
+        dist_filer.set_configuration('distortion', opticon, is_ait_data=False)
         traces = dist_filer.read_pickle(dist_filer.trace_file)
 
         profile_folder = iq_filer.get_folder(iq_filer.output_folder + 'profiles')

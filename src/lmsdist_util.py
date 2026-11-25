@@ -1262,7 +1262,7 @@ class Util:
           ``Quantity`` via ``numpy.full``; whether this yields floats or raises
           depends on the astropy/numpy versions and has not been verified.
         """
-        bs_slice_no, bs_phase = 15, 0.
+        bs_slice_no, bs_phase = 15, 0.          # Boresight definition
         efp_slice_width = Globals.beta_slice.to(u.arcsec) / Globals.efp_arcsec_mm
         slice_no_float = fslice_no + phase
         s_offset = slice_no_float - (bs_slice_no + bs_phase)

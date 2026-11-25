@@ -50,12 +50,6 @@ Written under ``../output/iq/<opticon>/<date_stamp>/``:
 
 Notes
 -----
-* Bug: at HEAD this script does not run.  It calls ``iq_filer.set_configuration('iq',
-  opticon)`` and ``dist_filer.set_configuration('distortion', opticon)`` with two
-  arguments, whereas :meth:`lms_filer.Filer.set_configuration` requires three
-  (``analysis_type, opticon, is_ait_data``), so a ``TypeError`` is raised before any
-  analysis starts.  The same two-argument call is made inside
-  :meth:`lmsiq_cuber.Cuber.build`.
 * Inconsistency: the data set actually analysed is not the one selected by
   ``iq_date_stamp`` in this file.  :class:`lms_filer.Filer` takes the date stamp from
   ``Globals.model_configurations['iq'][opticon]`` (``2024073000`` for nominal,
@@ -126,15 +120,9 @@ def main():
     -------
     None
 
-    Raises
-    ------
-    TypeError
-        Always, at HEAD, from ``iq_filer.set_configuration('iq', opticon)`` which omits
-        the required ``is_ait_data`` argument (see module Notes).
-
     Notes
     -----
-    * Bug: see module-level Notes for the ``set_configuration`` arity error.
+    * Both Filers are configured with ``is_ait_data=False`` (Zemax model data).
     * Inconsistency: the ``'extended'`` entry ``'2024061403'`` in ``data_dictionary``
       cannot be reached through :class:`lms_filer.Filer`, which resolves the extended
       iq data set to ``'2024032401'`` from :class:`lms_globals.Globals`.
@@ -192,10 +180,11 @@ def main():
                        'slice_radius': slice_radius,
                        'data_label': data_label
                        }
-    fmt = "Analysing dataset for {:s} optical path, dated {:s}"
+    _ = Globals()
+
+    fmt = "Analysing dataset 'data/iq/{:s}/{:s}"
     print(fmt.format(opticon, iq_date_stamp))
 
-    _ = Globals()
     base_debug_level = 'off'
     Globals.set_debug_level(base_debug_level)
 
@@ -208,7 +197,7 @@ def main():
 
     # model_configuration = analysis_type, opticon, iq_date_stamp, None, None, None
     iq_filer = Filer()
-    iq_filer.set_configuration('iq', opticon)
+    iq_filer.set_configuration('iq', opticon, is_ait_data=False)
 
     image_manager = ImageManager()
     image_manager.make_dictionary(data_identifier, iq_filer)
@@ -217,7 +206,7 @@ def main():
     ipc = Ipc()
 
     run_test = False  # Generate test case with 50 % IPC and an image with one bright pixel.
-    print("\nRunning test case = {:s}".format(str(run_test)))
+    print("Running test case = {:s}".format(str(run_test)))
     if run_test:
         test = Test()
         test.run(iq_filer)
@@ -236,7 +225,7 @@ def main():
     process_phase_data = False
     if process_phase_data:
         # Calculate the impact of sub-pixel shifts on photometry and line centroiding.
-        print("\nProcessing centroid shift impact for dataset {:s}".format(iq_date_stamp))
+        print("Processing centroid shift impact for dataset {:s}".format(iq_date_stamp))
         phase = Phase()                                 # Module for phase (wavelength) shift analysis
         phase.process(data_identifier, process_control, iq_filer, image_manager,
                       config_nos=[0], field_nos=[2], plot_level=2)
@@ -244,12 +233,12 @@ def main():
     build_cubes = True
     if build_cubes:
         print()
-        print('\nReconstructing cubes and analysing slice profile data')
+        print('Reconstructing cubes and analysing slice profile data')
         print('-----------------------------------------------------')
         cuber = Cuber()
         # dist_model_configuration = 'distortion', opticon, dist_date_stamp, None, None, None
         dist_filer = Filer()
-        dist_filer.set_configuration('distortion', opticon)
+        dist_filer.set_configuration('distortion', opticon, is_ait_data=False)
         cuber.build(data_identifier, process_control, image_manager, iq_filer, dist_filer,
                     debug=False, plot_to_png=False)
 

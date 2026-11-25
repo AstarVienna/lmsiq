@@ -216,8 +216,6 @@ class RayTrace:
         self.is_extended = None
         self.series = None
         self.unique_ech_ords = None
-        # self.unique_fslice_nos = None
-        # self.unique_pslice_nos = None
         self.unique_slice_nos = None            # Encoded 100 x pslice_no + fslice_no
         self.unique_waves = None
         self.wave_reference = None
@@ -473,11 +471,8 @@ class RayTrace:
         _, _, _, _, fp_in, fp_out = self.model_config
         is_first = True
         a_rms_list = []
-        # for pslice_no in self.unique_pslice_nos:
-        #     for fslice_no in self.unique_fslice_nos:
         for slice_no in self.unique_slice_nos:
             for ech_ord in self.unique_ech_ords:
-                # fslice_no, pslice_no = Util.decode_slice_no(slice_no)
                 slice_filter = {'slice_no': slice_no, 'ech_ord':ech_ord}
                 transform = Transform(lms_config=self.lms_config, slice_config=slice_filter)
                 waves = self.get_series('wavelength', slice_filter)
@@ -558,26 +553,9 @@ class RayTrace:
             array = self.series[key]
             idx = np.argwhere(array != series_filter[key])
             idx_register[idx] = False
-            # idx_register[idx] = np.logical_and(idx[0], idx_register[idx])
         idx = np.argwhere(idx_register)
         out = self.series[tag][idx]
         return out[:, 0]
-
-        # slice_no = series_filter['slice_no']
-        # # pslice_no = series_filter.get('pslice_no', 0)
-        # ech_ord = series_filter.get('ech_ord', None)
-        # a = self.series[tag]
-        # fslice_nos = self.series['fslice_no']
-        # fslice_no_mask = fslice_nos == fslice_no
-        # pslice_nos = self.series['pslice_no']
-        # pslice_no_mask = pslice_nos == pslice_no
-        # mask = np.logical_and(fslice_no_mask, pslice_no_mask)
-        # if ech_ord is not None:
-        #     ech_ords = self.series['ech_ord']
-        #     ech_ord_mask = ech_ords == ech_ord
-        #     mask = np.logical_and(mask, ech_ord_mask)
-        # a = np.compress(mask, a)
-        # return a
 
     def plot_fit_maps(self, **kwargs):
         """Quiver plot of (Zemax - transform) residual vectors in the mosaic plane, all slices.
@@ -605,8 +583,13 @@ class RayTrace:
 
         Notes
         -----
-        - Clean-up: ``subset`` / ``field`` are dead parameters; the
-          commented-out panel layout should be removed.
+        - A scale-reference arrow of 0.1 detector pixel
+          (``0.1 * Detector.det_pix_size / 1000`` mm) is drawn at the origin
+          with the same quiver scaling; axes are labelled 'MFP_X / mm' and
+          'MFP_Y / mm'.
+        - Clean-up: ``subset`` / ``field`` are dead parameters.  Upstream moved
+          the old multi-panel layout code (``n_rows, n_cols = 7, 4`` ...) from
+          comments into this docstring; it has been dropped here.
         - Clean-up: the ``oob`` flag from ``Util.efp_to_mfp`` is ignored.
         """
         suppress = kwargs.get('suppress', False)
@@ -619,20 +602,12 @@ class RayTrace:
         name = self.csv_name
         echelle_angle = self.lms_config['ech_ang']
         fig_title = "{:s} ea = {:4.2f}".format(name, echelle_angle)
-        # SPIFU 1 column per spatial slice, 1 column
-        # n_rows, n_cols = 7, 4
-        # unique_slices = self.unique_slice_nos
-        # slice_start = unique_slices[0]
-        # if self.is_extended:
-        #     n_rows = 6
-        #     n_cols = 3
-        # if subset:
-        #     n_rows = 3
-        #     n_cols = 1
         xlim = (None if plotdiffs else [-40.0, 40.0])
         fig, ax_list = plot.set_plot_area(fontsize=14.0, sharex=False, sharey=False,
                                           nrows=1, ncols=1, xlim=xlim)
         ax = ax_list[0, 0]
+        ax.set_xlabel('MFP_X / mm')
+        ax.set_ylabel('MFP_Y / mm')
         fig.suptitle(fig_title)
         for transform in self.transforms:
             slice_config = transform.slice_configuration
@@ -652,6 +627,11 @@ class RayTrace:
             _ = ax.quiver(det_x_fit, det_y_fit, u, v,
                           angles='xy', scale_units='xy', scale=.001,
                           width=0.001)
+            mfp_uv_cal = 0.1 * Detector.det_pix_size / 1000.
+            _ = ax.quiver([0.], [0.], [mfp_uv_cal], [0.],
+                          angles='xy', scale_units='xy', scale=.001,
+                          width=0.001)
+
         plot.show()
         return
 
